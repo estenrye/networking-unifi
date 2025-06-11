@@ -1,0 +1,2 @@
+#!/command/execlineb -P
+s6-envuidgid neutron neutron-dhcp-agent --config-file /etc/neutron/neutron.conf --config-file /etc/neutron/dhcp_agent.ini --log-file /dev/stdout

@@ -1,0 +1,2 @@
+#!/command/execlineb -P
+s6-envuidgid neutron ironic-neutron-agent --config-dir /etc/neutron --config-file /etc/neutron/plugins/ml2/ironic_neutron_agent.ini --log-file /dev/stdout

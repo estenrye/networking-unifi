@@ -1,0 +1,30 @@
+version: "3.8"
+
+services:
+  mariadb:
+    image: mariadb:latest
+    environment:
+      MYSQL_ROOT_PASSWORD: root_password
+      MYSQL_DATABASE: neutron_db
+      MYSQL_USER: neutron_user
+      MYSQL_PASSWORD: neutron_password
+    networks:
+      - neutron
+
+  neutron:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_HOST: mariadb
+      DATABASE_NAME: neutron_db
+      DATABASE_USER: neutron_user
+      DATABASE_PASSWORD: neutron_password
+    depends_on:
+      - mariadb
+    networks:
+      - neutron
+
+networks:
+  neutron:
+    driver: bridge

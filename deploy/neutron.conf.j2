@@ -1,0 +1,41 @@
+[DEFAULT]
+auth_strategy = noauth
+debug = true
+enable_new_agents = true
+bind_port = 3232
+transport_url = "fake://"
+api_workers = 1
+allow_overlapping_ips = true
+state_path = "/var/lib/neutron"
+core_plugin = "ml2"
+service_plugins = "router"
+allow_automatic_l3agent_failover = true
+network_auto_schedule = true
+router_auto_schedule  = true
+interface_driver      = noop
+
+[oslo_concurrency]
+lock_path = "/var/lib/neutron/tmp"
+
+[oslo_messaging_notifications]
+driver = noop
+transport_url = fake://
+
+[database]
+max_retries = -1
+engine = "sqlite"
+connection = "sqlite:////var/lib/neutron/neutron.sqlite"
+
+[database]
+{% if env.IRONIC_USE_MARIADB | lower == "true" %}
+connection = {{ env.MARIADB_CONNECTION }}
+{% else %}
+connection = {{ env.LOCAL_DB_URI }}
+# Synchronous mode is required for data integrity in case of operating system
+# crash. In our case we restart the container from scratch, so we can save some
+# IO by not doing syncs all the time.
+sqlite_synchronous = False
+{% endif %}
+
+[ironic]
+auth_type = "noauth"

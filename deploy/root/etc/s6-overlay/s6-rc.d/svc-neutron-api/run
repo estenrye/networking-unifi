@@ -1,0 +1,2 @@
+#!/command/execlineb -P
+s6-envuidgid maas s6-env DJANGO_SETTINGS_MODULE=maasserver.djangosettings.settings prometheus_multiproc_dir=/var/lib/maas/prometheus /usr/sbin/regiond

@@ -16,14 +16,17 @@ services:
       context: .
       dockerfile: Dockerfile
     environment:
-      DATABASE_HOST: mariadb
-      DATABASE_NAME: neutron_db
-      DATABASE_USER: neutron_user
-      DATABASE_PASSWORD: neutron_password
+      NEUTRON_USE_MARIADB: true
+      MARIADB_HOST: mariadb
+      MARIADB_DATABASE: neutron_db
+      MARIADB_USER: neutron_user
+      MARIADB_PASSWORD: neutron_password
     depends_on:
       - mariadb
     networks:
       - neutron
+    ports:
+      - "9696:9696"
 
 networks:
   neutron:

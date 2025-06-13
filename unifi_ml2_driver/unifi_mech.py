@@ -1076,15 +1076,3 @@ class UnifiMechDriver(api.MechanismDriver):
                 return True
 
         return False
-
-    def _is_send_bind_port(self, port_context):
-        """Verify that bind port is occur in compute context
-
-        The request HTTP will occur only when the device owner is compute
-        or dhcp.
-        """
-        device_owner = port_context['device_owner']
-        return (device_owner and
-                (device_owner.lower().startswith(
-                 neutron_const.DEVICE_OWNER_COMPUTE_PREFIX) or
-                 device_owner == neutron_const.DEVICE_OWNER_DHCP))

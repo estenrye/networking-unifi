@@ -5,6 +5,21 @@ COMMAND="${*:-start}"
 
 NEUTRON_CONF="${NEUTRON_CONF:-/etc/neutron/neutron.conf}"
 
+# Build MariaDB connection string if MariaDB is enabled
+if [[ "${NEUTRON_USE_MARIADB}" == true ]]; then
+    if [[ -z "${MARIADB_PASSWORD:-}" ]]; then
+        echo "FATAL: NEUTRON_USE_MARIADB requires password"
+        exit 1
+    fi
+    MARIADB_DATABASE=${MARIADB_DATABASE:-neutron}
+    MARIADB_USER=${MARIADB_USER:-neutron}
+    MARIADB_HOST=${MARIADB_HOST:-127.0.0.1}
+    export MARIADB_CONNECTION="mysql+pymysql://${MARIADB_USER}:${MARIADB_PASSWORD}@${MARIADB_HOST}/${MARIADB_DATABASE}?charset=utf8"
+    if [[ "$MARIADB_TLS_ENABLED" == "true" ]]; then
+        export MARIADB_CONNECTION="${MARIADB_CONNECTION}&ssl=on&ssl_ca=${MARIADB_CACERT_FILE}"
+    fi
+fi
+
 if [ -n "${MARIADB_CONNECTION}" ]; then
   crudini --set "${NEUTRON_CONF}" database connection "${MARIADB_CONNECTION}"
 fi

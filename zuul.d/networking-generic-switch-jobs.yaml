@@ -2,17 +2,17 @@
     name: networking-generic-switch-tempest-dlm
     parent: devstack-tempest
     irrelevant-files:
-    - ^.*\.rst$
-    - ^doc/.*$
-    - ^unifi_ml2_driver/tests/.*$
-    - ^releasenotes/.*$
-    - ^setup.cfg$
-    - ^test-requirements.txt$
-    - ^tools/.*$
-    - ^tox.ini$
+      - ^.*\.rst$
+      - ^doc/.*$
+      - ^networking_unifi/tests/.*$
+      - ^releasenotes/.*$
+      - ^setup.cfg$
+      - ^test-requirements.txt$
+      - ^tools/.*$
+      - ^tox.ini$
     timeout: 4800
     required-projects:
-    - openstack/networking-generic-switch
+      - openstack/networking-generic-switch
     vars:
       tox_envlist: py3
       tempest_test_regex: ngs

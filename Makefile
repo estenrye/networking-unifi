@@ -1,6 +1,6 @@
 # Inspired by: https://blog.mathieu-leplatre.info/tips-for-your-makefile-with-python.html
 
-PYMODULE := unifi_ml2_driver
+PYMODULE := networking_unifi
 TESTS := tests
 INSTALL_STAMP := .install.stamp
 POETRY := $(shell command -v poetry 2> /dev/null)
@@ -52,13 +52,13 @@ clean:
 
 # Run linting
 lint:
-	poetry run flake8 unifi_ml2_driver
-	poetry run mypy unifi_ml2_driver
+	poetry run flake8 networking_unifi
+	poetry run mypy networking_unifi
 
 # Format code
 format:
-	poetry run black unifi_ml2_driver
-	poetry run isort unifi_ml2_driver
+	poetry run black networking_unifi
+	poetry run isort networking_unifi
 
 # Run tests
 test:
@@ -66,11 +66,11 @@ test:
 
 # Run tests with coverage
 test-cov:
-	poetry run pytest --cov=unifi_ml2_driver --cov-report=term-missing --cov-report=xml:coverage.xml --cov-report=html:htmlcov
+	poetry run pytest --cov=networking_unifi --cov-report=term-missing --cov-report=xml:coverage.xml --cov-report=html:htmlcov
 
 # Run tests compatible with macOS (skips Linux-specific tests)
 test-macos:
-	poetry run pytest unifi_ml2_driver/tests/unit/test_exceptions.py -v
+	poetry run pytest networking_unifi/tests/unit/test_exceptions.py -v
 
 # Run pre-commit checks
 pre-commit:

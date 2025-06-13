@@ -114,9 +114,9 @@ pygments_style = 'native'
 html_theme = 'openstackdocs'
 
 # openstackdocstheme options
-openstackdocs_repo_name = 'ubiquity-community/unifi-ml2-driver'
+openstackdocs_repo_name = 'ubiquity-community/networking-unifi'
 openstackdocs_auto_name = False
-openstackdocs_bug_project = 'unifi-ml2-driver'
+openstackdocs_bug_project = 'networking-unifi'
 openstackdocs_bug_tag = ''
 
 # Theme options are theme-specific and customize the look and feel of a theme

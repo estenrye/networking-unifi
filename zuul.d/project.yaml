@@ -1,34 +1,34 @@
 - project:
-    templates:
-    - check-requirements
-    - openstack-python3-jobs-neutron
-    - publish-openstack-docs-pti
-    - release-notes-jobs-python3
-    check:
-      jobs:
-      - networking-generic-switch-tempest-dlm
-      - ironic-tempest-ipa-wholedisk-direct-tinyipa-multinode:
-          irrelevant-files:
-          - ^.*\.rst$
-          - ^doc/.*$
-          - ^unifi_ml2_driver/tests/.*$
-          - ^releasenotes/.*$
-          - ^(test-|)requirements.txt$
-          - ^tools/.*$
-          - ^tox.ini$
-          - ^setup.cfg$
-      - networking-generic-switch-tox-codespell:
-          voting: false
-    gate:
-      jobs:
-      - networking-generic-switch-tempest-dlm
-      - ironic-tempest-ipa-wholedisk-direct-tinyipa-multinode:
-          irrelevant-files:
-          - ^.*\.rst$
-          - ^doc/.*$
-          - ^unifi_ml2_driver/tests/.*$
-          - ^releasenotes/.*$
-          - ^(test-|)requirements.txt$
-          - ^tools/.*$
-          - ^tox.ini$
-          - ^setup.cfg$
+      templates:
+          - check-requirements
+          - openstack-python3-jobs-neutron
+          - publish-openstack-docs-pti
+          - release-notes-jobs-python3
+      check:
+          jobs:
+              - networking-generic-switch-tempest-dlm
+              - ironic-tempest-ipa-wholedisk-direct-tinyipa-multinode:
+                    irrelevant-files:
+                        - ^.*\.rst$
+                        - ^doc/.*$
+                        - ^networking_unifi/tests/.*$
+                        - ^releasenotes/.*$
+                        - ^(test-|)requirements.txt$
+                        - ^tools/.*$
+                        - ^tox.ini$
+                        - ^setup.cfg$
+              - networking-generic-switch-tox-codespell:
+                    voting: false
+      gate:
+          jobs:
+              - networking-generic-switch-tempest-dlm
+              - ironic-tempest-ipa-wholedisk-direct-tinyipa-multinode:
+                    irrelevant-files:
+                        - ^.*\.rst$
+                        - ^doc/.*$
+                        - ^networking_unifi/tests/.*$
+                        - ^releasenotes/.*$
+                        - ^(test-|)requirements.txt$
+                        - ^tools/.*$
+                        - ^tox.ini$
+                        - ^setup.cfg$

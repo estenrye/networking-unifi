@@ -26,7 +26,7 @@ extensions = [
 ]
 
 # openstackdocstheme options
-openstackdocs_repo_name = 'ubiquity-community/unifi-ml2-driver'
+openstackdocs_repo_name = 'ubiquity-community/networking-unifi'
 openstackdocs_pdf_link = True
 openstackdocs_use_storyboard = False
 
@@ -63,7 +63,7 @@ pygments_style = 'native'
 html_theme = 'openstackdocs'
 
 # Output file base name for HTML help builder.
-htmlhelp_basename = 'unifi-ml2-driverdoc'
+htmlhelp_basename = 'networking-unifidoc'
 
 latex_use_xindy = False
 
@@ -72,7 +72,7 @@ latex_use_xindy = False
 # [howto/manual]).
 latex_documents = [
     ('index',
-     'doc-unifi-ml2-driver.tex',
+     'doc-networking-unifi.tex',
      'UniFi ML2 Driver Documentation',
      'Ubiquity Community', 'manual'),
 ]
@@ -82,7 +82,7 @@ latex_documents = [
 
 # -- sphinxcontrib.apidoc configuration --------------------------------------
 
-apidoc_module_dir = '../../unifi_ml2_driver'
+apidoc_module_dir = '../../networking_unifi'
 apidoc_output_dir = 'contributor/api'
 apidoc_excluded_paths = [
     'tests',

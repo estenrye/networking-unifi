@@ -16,8 +16,7 @@
 
 from neutron_lib import exceptions
 
-from unifi_ml2_driver._i18n import _
-
+from ._i18n import _
 
 class UnifiException(exceptions.NeutronException):
     """Base UniFi Exception."""
@@ -80,7 +79,7 @@ class UnifiTrunkConfigError(UnifiException):
 class UnifiBatchError(UnifiException):
     """Raised when a batch operation fails."""
     message = _("Batch operation failed on device %(device)s: %(error)s")
-    
+
     def __init__(self, device=None, error=None):
         kwargs = {'device': device, 'error': error}
         super(UnifiBatchError, self).__init__(msg=None, **kwargs)

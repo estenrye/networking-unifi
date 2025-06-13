@@ -23,7 +23,7 @@ from neutron_lib.utils import net
 from oslo_config import cfg
 import oslo_log.log as logging
 
-import unifi_ml2_driver.unifi_mech as unifi
+import networking_unifi.unifi_mech as unifi
 
 eventlet.monkey_patch()
 

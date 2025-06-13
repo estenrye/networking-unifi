@@ -2,7 +2,7 @@
 Installation
 ============
 
-This section describes how to install and configure the unifi-ml2-driver plugin.
+This section describes how to install and configure the networking-unifi plugin.
 
 Requirements
 -----------
@@ -20,14 +20,14 @@ Via pip (recommended)
 
 .. code-block:: console
 
-   $ pip install unifi-ml2-driver
+   $ pip install networking-unifi
 
 Via Poetry
 ~~~~~~~~~
 
 .. code-block:: console
 
-   $ cd unifi-ml2-driver
+   $ cd networking-unifi
    $ poetry install
 
 Via Source
@@ -35,8 +35,8 @@ Via Source
 
 .. code-block:: console
 
-   $ git clone https://github.com/ubiquity-community/unifi-ml2-driver.git
-   $ cd unifi-ml2-driver
+   $ git clone https://github.com/ubiquity-community/networking-unifi.git
+   $ cd networking-unifi
    $ pip install .
 
 Enabling the Driver in Neutron

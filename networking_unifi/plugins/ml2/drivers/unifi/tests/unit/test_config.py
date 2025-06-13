@@ -17,7 +17,7 @@ from unittest import mock
 import fixtures
 from oslo_config import fixture as config_fixture
 
-from unifi_ml2_driver import config
+from networking_unifi import config
 
 
 fake_config = """

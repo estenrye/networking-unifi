@@ -4,7 +4,7 @@ Contributing to UniFi ML2 Driver
 
 If you would like to contribute to the development of UniFi ML2 Driver project, you can submit pull requests through GitHub:
 
-   https://github.com/ubiquity-community/unifi-ml2-driver
+   https://github.com/ubiquity-community/networking-unifi
 
 Contributor License Agreement
 =============================
@@ -25,10 +25,10 @@ Project Hosting Details
 =======================
 
 Bug tracker
-    https://github.com/ubiquity-community/unifi-ml2-driver/issues
+    https://github.com/ubiquity-community/networking-unifi/issues
 
 Code Hosting
-    https://github.com/ubiquity-community/unifi-ml2-driver
+    https://github.com/ubiquity-community/networking-unifi
 
 Getting Started as a Contributor
 ===============================
@@ -78,15 +78,15 @@ The UniFi ML2 Driver project uses Poetry for dependency management and packaging
 
   .. code-block:: console
 
-     $ poetry run flake8 unifi_ml2_driver
-     $ poetry run mypy unifi_ml2_driver
+     $ poetry run flake8 networking_unifi
+     $ poetry run mypy networking_unifi
 
 * To format code:
 
   .. code-block:: console
 
-     $ poetry run black unifi_ml2_driver
-     $ poetry run isort unifi_ml2_driver
+     $ poetry run black networking_unifi
+     $ poetry run isort networking_unifi
 
 Documentation
 ============

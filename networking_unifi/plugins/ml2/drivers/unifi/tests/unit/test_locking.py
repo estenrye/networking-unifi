@@ -19,7 +19,7 @@ from oslo_config import fixture as config_fixture
 import tenacity
 from tooz import coordination
 
-from unifi_ml2_driver import locking as ngs_lock
+from networking_unifi import locking as ngs_lock
 
 
 class PoolLockTest(fixtures.TestWithFixtures):

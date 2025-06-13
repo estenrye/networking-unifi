@@ -31,14 +31,14 @@ from neutron_lib.callbacks import resources, events
 from neutron_lib.plugins.ml2 import api
 from oslo_log import log as logging
 
-from unifi_ml2_driver import exceptions
-from unifi_ml2_driver.dns_handler import UnifiDnsHandler
-from unifi_ml2_driver.unifi_api import get_unifi_api
+from .exceptions import UnifiException, CannotConnect, UnifiNetmikoConfigError
+from .dns_handler import UnifiDnsHandler
+from .unifi_api import get_unifi_api
 from aiounifi.models.network import NetworkCreateRequest, NetworkDeleteRequest, Network, TypedNetwork
 from aiounifi.models.device import TypedDevicePortOverrides, DeviceSetPortProfileRequest
-from unifi_ml2_driver import trunk_driver
+from .trunk_driver import UnifiTrunkDriver
 
-from unifi_ml2_driver.config import CONF
+from .config import CONF
 
 LOG = logging.getLogger(__name__)
 
@@ -105,7 +105,7 @@ class UnifiMechDriver(api.MechanismDriver):
         LOG.info("Initializing UniFi ML2 driver")
 
         # Initialize trunk driver if available
-        self.trunk_driver = trunk_driver.UnifiTrunkDriver.create(self)
+        self.trunk_driver = UnifiTrunkDriver.create(self)
 
         # Verify we have required configuration
         if not CONF.unifi.host:
@@ -837,7 +837,7 @@ class UnifiMechDriver(api.MechanismDriver):
                 loop.run_until_complete(controller.networks.update())
                 network = next((net for _, net in controller.networks.items() if hasattr(net, 'vlan') and net.vlan == vlan_id), None)
                 if not network:
-                    raise exceptions.UnifiException(
+                    raise UnifiException(
                         f"Network with VLAN {vlan_id} not found in UniFi controller")
                 network_id = network.id
                 LOG.debug("Found network %s with VLAN %s", network_id, vlan_id)
@@ -848,7 +848,7 @@ class UnifiMechDriver(api.MechanismDriver):
                 switch = next((d for _, d in devices if hasattr(d, 'mac') and d.mac == switch_id), None)
 
                 if not switch:
-                    raise exceptions.CannotConnect(
+                    raise CannotConnect(
                         f"Switch {switch_id} not found in UniFi controller")
 
                 # Get port_idx from port_id (could be a name or number)
@@ -861,11 +861,11 @@ class UnifiMechDriver(api.MechanismDriver):
                     if port and hasattr(port, 'port_idx'):
                         port_idx = port.get("port_idx")
                     else:
-                        raise exceptions.UnifiException(
+                        raise UnifiException(
                             f"Port {port_id} not found on switch {switch_id}")
 
                 if port_idx is None:
-                    raise exceptions.UnifiException(
+                    raise UnifiException(
                         f"Port {port_id} not found on switch {switch_id}")
 
                 port_conf = TypedDevicePortOverrides({
@@ -926,7 +926,7 @@ class UnifiMechDriver(api.MechanismDriver):
         except Exception as e:
             LOG.error("Failed to configure port %s on switch %s: %s",
                     port_id, switch_id, e)
-            raise exceptions.UnifiNetmikoConfigError()
+            raise UnifiNetmikoConfigError()
 
     def _unconfigure_port(self, switch_id, port_id):
         """Reset a port to default configuration.
@@ -953,7 +953,7 @@ class UnifiMechDriver(api.MechanismDriver):
                 loop.run_until_complete(controller.networks.update())
                 network = next((net for _, net in controller.networks.items() if hasattr(net, 'vlan') and net.vlan == vlan_id), None)
                 if not network:
-                    raise exceptions.UnifiException(
+                    raise UnifiException(
                         f"Network with VLAN {vlan_id} not found in UniFi controller")
                 network_id = network.id
                 LOG.debug("Found network %s with VLAN %s", network_id, vlan_id)
@@ -964,7 +964,7 @@ class UnifiMechDriver(api.MechanismDriver):
                 switch = next((d for _, d in devices if hasattr(d, 'mac') and d.mac == switch_id), None)
 
                 if not switch:
-                    raise exceptions.CannotConnect(
+                    raise CannotConnect(
                         f"Switch {switch_id} not found in UniFi controller")
 
                 # Get port_idx from port_id (could be a name or number)
@@ -977,11 +977,11 @@ class UnifiMechDriver(api.MechanismDriver):
                     if port:
                         port_idx = port.get("port_idx")
                     else:
-                        raise exceptions.UnifiException(
+                        raise UnifiException(
                             f"Port {port_id} not found on switch {switch_id}")
 
                 if port_idx is None:
-                    raise exceptions.UnifiException(
+                    raise UnifiException(
                         f"Port {port_id} not found on switch {switch_id}")
 
                 # Create port configuration to reset

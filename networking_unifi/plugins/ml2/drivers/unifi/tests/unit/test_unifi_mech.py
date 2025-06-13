@@ -22,8 +22,8 @@ from neutron_lib.api.definitions import portbindings
 from neutron_lib.plugins.ml2 import api as ml2_api
 from oslo_config import cfg
 
-from unifi_ml2_driver import exceptions
-from unifi_ml2_driver import unifi_mech
+from networking_unifi import exceptions
+from networking_unifi import unifi_mech
 
 # Mock device data
 MOCK_SWITCH_MAC = '78:45:58:ab:cd:ef'
@@ -72,21 +72,21 @@ class TestUnifiMechDriver(unittest.TestCase):
 
         # Create driver instance
         self.driver = unifi_mech.UnifiMechDriver()
-        
+
         # Mock controller
         self.mock_controller = mock.MagicMock()
         self.mock_controller.__enter__.return_value = self.mock_controller
-        
+
         # Mock devices for controller
         self.fake_switch = FakeSwitch()
         self.mock_controller.devices.update.return_value = asyncio.Future()
         self.mock_controller.devices.update.return_value.set_result([self.fake_switch])
-        
+
         # Patch get_controller method
         self.mock_get_controller = mock.patch.object(
             self.driver, '_get_controller', return_value=self.mock_controller)
         self.mock_get_controller.start()
-        
+
         # Set up port mappings
         self.driver.port_mappings = {
             'port-1': {
@@ -100,58 +100,58 @@ class TestUnifiMechDriver(unittest.TestCase):
         """Clean up test environment."""
         self.mock_cfg.stop()
         self.mock_get_controller.stop()
-        
+
     def test_initialize(self):
         """Test driver initialization."""
         self.driver.initialize()
         self.mock_controller.__enter__.assert_called_once()
-        
+
     def test_is_switch_supported(self):
         """Test switch support detection."""
         self.assertTrue(self.driver._is_switch_supported(MOCK_SWITCH_MAC))
-        
+
         # Test with non-existent switch
         self.mock_controller.devices.update.return_value = asyncio.Future()
         self.mock_controller.devices.update.return_value.set_result([])
         self.assertFalse(self.driver._is_switch_supported('00:11:22:33:44:55'))
-        
+
     def test_configure_port(self):
         """Test port configuration."""
         # Set up mock for port_conf
         self.mock_controller.devices.async_set_port_conf.return_value = asyncio.Future()
         self.mock_controller.devices.async_set_port_conf.return_value.set_result(True)
-        
+
         # Test configure port
         self.driver._configure_port(MOCK_SWITCH_MAC, MOCK_PORT_ID, 'port-1', MOCK_VLAN_ID)
-        
+
         # Verify port configuration was called
         self.mock_controller.devices.async_set_port_conf.assert_called_once()
-        
+
         # Verify the port configuration parameters
         args = self.mock_controller.devices.async_set_port_conf.call_args[0][0]
         self.assertEqual(args['mac'], MOCK_SWITCH_MAC)
         self.assertEqual(args['port_idx'], int(MOCK_PORT_ID))
         self.assertEqual(args['port_vlan'], MOCK_VLAN_ID)
         self.assertTrue(args['port_vlan_enabled'])
-        
+
     def test_configure_port_with_qos(self):
         """Test port configuration with QoS."""
         # Enable QoS
         cfg.CONF.set_override('enable_qos', True, group='unifi')
         cfg.CONF.set_override('default_bandwidth_limit', 1000000, group='unifi')
-        
+
         # Set up mock for port_conf
         self.mock_controller.devices.async_set_port_conf.return_value = asyncio.Future()
         self.mock_controller.devices.async_set_port_conf.return_value.set_result(True)
-        
+
         # Test configure port
         self.driver._configure_port(MOCK_SWITCH_MAC, MOCK_PORT_ID, 'port-1', MOCK_VLAN_ID)
-        
+
         # Verify QoS parameters
         args = self.mock_controller.devices.async_set_port_conf.call_args[0][0]
         self.assertTrue(args['tx_rate_limit_enabled'])
         self.assertEqual(args['tx_rate_limit_kbps_cfg'], 1000000)
-        
+
     def test_configure_port_with_storm_control(self):
         """Test port configuration with storm control."""
         # Enable storm control
@@ -159,14 +159,14 @@ class TestUnifiMechDriver(unittest.TestCase):
         cfg.CONF.set_override('storm_control_broadcasting', 80, group='unifi')
         cfg.CONF.set_override('storm_control_multicasting', 70, group='unifi')
         cfg.CONF.set_override('storm_control_unknown_unicast', 60, group='unifi')
-        
+
         # Set up mock for port_conf
         self.mock_controller.devices.async_set_port_conf.return_value = asyncio.Future()
         self.mock_controller.devices.async_set_port_conf.return_value.set_result(True)
-        
+
         # Test configure port
         self.driver._configure_port(MOCK_SWITCH_MAC, MOCK_PORT_ID, 'port-1', MOCK_VLAN_ID)
-        
+
         # Verify storm control parameters
         args = self.mock_controller.devices.async_set_port_conf.call_args[0][0]
         self.assertTrue(args['stormctrl_bcast_enabled'])
@@ -175,19 +175,19 @@ class TestUnifiMechDriver(unittest.TestCase):
         self.assertEqual(args['stormctrl_mcast_rate'], 70)
         self.assertTrue(args['stormctrl_ucast_enabled'])
         self.assertEqual(args['stormctrl_ucast_rate'], 60)
-        
+
     def test_configure_port_with_port_security(self):
         """Test port configuration with port security."""
         # Enable port security
         cfg.CONF.set_override('enable_port_security', True, group='unifi')
-        
+
         # Set up mock for port_conf
         self.mock_controller.devices.async_set_port_conf.return_value = asyncio.Future()
         self.mock_controller.devices.async_set_port_conf.return_value.set_result(True)
-        
+
         # Test configure port
         self.driver._configure_port(MOCK_SWITCH_MAC, MOCK_PORT_ID, 'port-1', MOCK_VLAN_ID)
-        
+
         # Verify port security parameters
         args = self.mock_controller.devices.async_set_port_conf.call_args[0][0]
         self.assertEqual(args['dot1x_ctrl'], 'force_authorized')
@@ -200,20 +200,20 @@ class TestUnifiMechDriver(unittest.TestCase):
         # Set up mock for port_conf
         self.mock_controller.devices.async_set_port_conf.return_value = asyncio.Future()
         self.mock_controller.devices.async_set_port_conf.return_value.set_result(True)
-        
+
         # Test unconfigure port
         self.driver._unconfigure_port(MOCK_SWITCH_MAC, MOCK_PORT_ID)
-        
+
         # Verify port configuration was called
         self.mock_controller.devices.async_set_port_conf.assert_called_once()
-        
+
         # Verify the port configuration parameters
         args = self.mock_controller.devices.async_set_port_conf.call_args[0][0]
         self.assertEqual(args['mac'], MOCK_SWITCH_MAC)
         self.assertEqual(args['port_idx'], int(MOCK_PORT_ID))
         self.assertFalse(args['port_vlan_enabled'])
         self.assertEqual(args['tagged_vlan'], [])
-        
+
     def test_bind_port(self):
         """Test port binding."""
         # Create mock for port context
@@ -235,30 +235,30 @@ class TestUnifiMechDriver(unittest.TestCase):
                 ]
             }
         }
-        
+
         # Test bind_port
         result = self.driver.bind_port(port_context)
-        
+
         # Verify binding was successful
         self.assertTrue(result)
         port_context.set_binding.assert_called_once_with(
-            'segment_id', portbindings.VIF_TYPE_OTHER, 
+            'segment_id', portbindings.VIF_TYPE_OTHER,
             self.driver.vif_details, status=mock.ANY
         )
-        
+
     def test_bind_port_no_segments(self):
         """Test port binding with no segments."""
         # Create mock for port context
         port_context = mock.MagicMock()
         port_context.segments_to_bind = []
-        
+
         # Test bind_port
         result = self.driver.bind_port(port_context)
-        
+
         # Verify binding was not successful
         self.assertFalse(result)
         port_context.set_binding.assert_not_called()
-        
+
     def test_bind_port_no_link_info(self):
         """Test port binding with no local link info."""
         # Create mock for port context
@@ -273,10 +273,10 @@ class TestUnifiMechDriver(unittest.TestCase):
             'id': 'port-id',
             'binding:profile': {}
         }
-        
+
         # Test bind_port
         result = self.driver.bind_port(port_context)
-        
+
         # Verify binding was not successful
         self.assertFalse(result)
         port_context.set_binding.assert_not_called()

@@ -1,6 +1,6 @@
 import oslo_i18n
 
-DOMAIN = "unifi_ml2_driver"
+DOMAIN = "networking_unifi"
 
 _translators = oslo_i18n.TranslatorFactory(domain=DOMAIN)
 

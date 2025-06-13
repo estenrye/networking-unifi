@@ -7,12 +7,12 @@ ignore = D100,D104,D107,W503
 # D107: Missing docstring in __init__
 # W503: Line break before binary operator (conflicts with black)
 per-file-ignores =
-    unifi_ml2_driver/tests/*:D101,D102,D103,D105,D106
+    networking_unifi/tests/*:D101,D102,D103,D105,D106
     # D101: Missing docstring in public class
     # D102: Missing docstring in public method
     # D103: Missing docstring in public function
     # D105: Missing docstring in magic method
     # D106: Missing docstring in public nested class
 import-order-style = google
-application-import-names = unifi_ml2_driver
+application-import-names = networking_unifi
 docstring-convention = google

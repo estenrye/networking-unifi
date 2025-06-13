@@ -1,7 +1,7 @@
 [project]
-name = "unifi-ml2-driver"
+name = "networking-unifi"
 dynamic = [ "version" ]
-urls = { repository = "https://github.com/ubiquiti-community/unifi-ml2-driver", documentation = "https://github.com/ubiquiti-community/unifi-ml2-driver/tree/main/doc/source" }
+urls = { repository = "https://github.com/ubiquiti-community/networking-unifi", documentation = "https://github.com/ubiquiti-community/networking-unifi/tree/main/doc/source" }
 description = "Unifi Modular Layer 2 (ML2) driver."
 authors = [{ name = "appkins", email = "info@appkins.io" }]
 license-files = ["LICENSE"]
@@ -24,12 +24,12 @@ dependencies = [
 ]
 
 [project.entry-points."neutron.ml2.mechanism_drivers"]
-unifi = "unifi_ml2_driver.unifi_mech:UnifiMechDriver"
+unifi = "networking_unifi.plugins.ml2.drivers.unifi.unifi_mech:UnifiMechDriver"
 
 [tool.poetry]
 version = "1.0.6"
-packages = [{ include = "unifi_ml2_driver" }]
-# scripts = { unifi-ml2-driver = "unifi_ml2_driver.cli:main" }
+packages = [{ include = "networking_unifi" }]
+# scripts = { networking-unifi = "networking_unifi.cli:main" }
 dependencies = { python = ">=3.12.0,<4.0" }
 
 [tool.poetry.group.dev.dependencies]
@@ -118,19 +118,19 @@ module = [
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
-testpaths = ["unifi_ml2_driver/tests"]
+testpaths = ["networking_unifi/tests"]
 python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"
-addopts = "--cov=unifi_ml2_driver --cov-report=term-missing --cov-report=xml:coverage.xml --cov-report=html:htmlcov"
+addopts = "--cov=networking_unifi --cov-report=term-missing --cov-report=xml:coverage.xml --cov-report=html:htmlcov"
 filterwarnings = [
     "ignore::DeprecationWarning",
     "ignore::PendingDeprecationWarning",
 ]
 
 [tool.coverage.run]
-source = ["unifi_ml2_driver"]
-omit = ["unifi_ml2_driver/tests/*", "unifi_ml2_driver/_i18n.py"]
+source = ["networking_unifi"]
+omit = ["networking_unifi/tests/*", "networking_unifi/_i18n.py"]
 
 [tool.coverage.report]
 exclude_lines = [

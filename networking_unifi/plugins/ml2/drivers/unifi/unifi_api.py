@@ -32,7 +32,7 @@ async def get_unifi_api(
         ssl_context = ssl.create_default_context(
             purpose=ssl.Purpose.CLIENT_AUTH,
         )
-        
+
     session = ClientSession(
         cookie_jar=CookieJar(unsafe=unsafe)
         )
@@ -50,41 +50,42 @@ async def get_unifi_api(
         )
     )
 
-    try:
-        async with asyncio.timeout(10):
-            await api.login()
+    if not CONF.unifi.apikey and (CONF.unifi.username and CONF.unifi.password):
+      try:
+          async with asyncio.timeout(10):
+              await api.login()
 
-    except Unauthorized as err:
-        LOG.warning(
-            "Connected to UniFi Network at %s but not registered: %s",
-            CONF.unifi.host,
-            err,
-        )
-        raise AuthenticationRequired(reason=str(err)) from err
+      except Unauthorized as err:
+          LOG.warning(
+              "Connected to UniFi Network at %s but not registered: %s",
+              CONF.unifi.host,
+              err,
+          )
+          raise AuthenticationRequired(reason=str(err)) from err
 
-    except (
-        TimeoutError,
-        BadGateway,
-        Forbidden,
-        ServiceUnavailable,
-        RequestError,
-        ResponseError,
-    ) as err:
-        LOG.error(
-            "Error connecting to the UniFi Network at %s: %s", CONF.unifi.host, err
-        )
-        raise CannotConnect(reason=str(err)) from err
+      except (
+          TimeoutError,
+          BadGateway,
+          Forbidden,
+          ServiceUnavailable,
+          RequestError,
+          ResponseError,
+      ) as err:
+          LOG.error(
+              "Error connecting to the UniFi Network at %s: %s", CONF.unifi.host, err
+          )
+          raise CannotConnect(reason=str(err)) from err
 
-    except LoginRequired as err:
-        LOG.warning(
-            "Connected to UniFi Network at %s but login required: %s",
-            CONF.unifi.host,
-            err,
-        )
-        raise AuthenticationRequired(reason=str(err)) from err
+      except LoginRequired as err:
+          LOG.warning(
+              "Connected to UniFi Network at %s but login required: %s",
+              CONF.unifi.host,
+              err,
+          )
+          raise AuthenticationRequired(reason=str(err)) from err
 
-    except AiounifiException as err:
-        LOG.exception("Unknown UniFi Network communication error occurred: %s", err)
-        raise AuthenticationRequired(reason=str(err)) from err
+      except AiounifiException as err:
+          LOG.exception("Unknown UniFi Network communication error occurred: %s", err)
+          raise AuthenticationRequired(reason=str(err)) from err
 
     return api

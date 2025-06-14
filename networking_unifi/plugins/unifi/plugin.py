@@ -44,8 +44,10 @@ class UnifiPlugin(Ml2Plugin, l3_db.L3_NAT_db_mixin):
         self._supported_extension_aliases.remove("dhcp_agent_scheduler")
 
         # Set ML2 options so the user doesn't have to.
+        LOG.info("Forcing DHCP agent to not run")
+        cfg.CONF.set_override('enable_traditional_dhcp', False)
         LOG.info("Forcing ML2 mechanism_drivers to 'unifi'")
-        cfg.CONF.set_override('mechanism_drivers', ['unifi'], group='ml2')
+        cfg.CONF.set_override('mechanism_drivers', ['unifi', 'baremetal'], group='ml2')
         LOG.info("Forcing ML2 type_drivers to 'local, flat'")
         cfg.CONF.set_override('type_drivers', ['local', 'flat'], group='ml2')
         LOG.info("Forcing ML2 tenant_network_types to 'local'")

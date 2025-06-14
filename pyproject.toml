@@ -13,6 +13,7 @@ dependencies = [
     "eventlet (>=0.18.2)",
     "stevedore (>=1.20.0)",
     "netmiko (>=4.1.1)",
+    "networking-baremetal (>=6.6.0)",
     "neutron (>=13.0.0.0b1)",
     "neutron-lib (>=1.18.0)",
     "oslo-config (>=5.2.0)",
@@ -25,6 +26,12 @@ dependencies = [
 
 [project.entry-points."neutron.ml2.mechanism_drivers"]
 unifi = "networking_unifi.plugins.ml2.drivers.unifi.unifi_mech:UnifiMechDriver"
+
+[project.entry-points."neutron.core_plugins"]
+unifi = "networking_unifi.plugins.unifi.plugin:UnifiPlugin"
+
+[project.entry-points."networking_baremetal.drivers"]
+unifi = "networking_unifi.drivers.unifi.unifi:UnifiDriver"
 
 [tool.poetry]
 version = "1.0.6"

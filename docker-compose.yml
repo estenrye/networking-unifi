@@ -3,6 +3,11 @@ version: "3.8"
 services:
   mariadb:
     image: mariadb:latest
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
     environment:
       MYSQL_ROOT_PASSWORD: root_password
       MYSQL_DATABASE: neutron_db
@@ -22,7 +27,8 @@ services:
       MARIADB_USER: neutron_user
       MARIADB_PASSWORD: neutron_password
     depends_on:
-      - mariadb
+      mariadb:
+        condition: service_healthy
     networks:
       - neutron
     ports:

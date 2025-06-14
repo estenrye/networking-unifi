@@ -87,4 +87,3 @@ WORKDIR /
 EXPOSE 9696
 
 ENTRYPOINT ["/init"]
-CMD ["svc-bundle"]

@@ -26,6 +26,7 @@ import time
 
 from neutron_lib.api.definitions import dns as dns_apidef
 from neutron_lib.api.definitions import portbindings
+from neutron_lib.api.definitions import provider_net
 from neutron_lib import constants as n_const
 from neutron_lib.callbacks import resources, events
 from neutron_lib.plugins.ml2 import api
@@ -41,24 +42,6 @@ from .trunk_driver import UnifiTrunkDriver
 from .config import CONF
 
 LOG = logging.getLogger(__name__)
-
-def context_validator(context_type=None):
-    def real_decorator(func):
-        @functools.wraps(func)
-        def wrapper(instance, context, *args, **kwargs):
-            if context_type == "Port":
-                # port context contain network_context
-                # which include the segments
-                segments = getattr(context.network, "network_segments", None)
-            elif context_type == "Network":
-                segments = getattr(context, "network_segments", None)
-            else:
-                segments = getattr(context, "segments_to_bind", None)
-            if segments and getattr(instance, "check_segments", None):
-                if instance.check_segments(segments):
-                    return func(instance, context, *args, **kwargs)
-        return wrapper
-    return real_decorator
 
 def error_handler(func):
     @functools.wraps(func)
@@ -91,10 +74,17 @@ class UnifiMechDriver(api.MechanismDriver):
         self.dns_handler = UnifiDnsHandler(self)
 
     @property
-    def connectivity(self): # type: ignore
+    def connectivity(self):
         return portbindings.CONNECTIVITY_L2
 
-    @context_validator()
+    def get_allowed_network_types(self, agent):
+        """Return the agent's or driver's allowed network types.
+
+        For example: return ('flat', ...). You can also refer to the
+        configuration the given agent exposes.
+        """
+        return [n_const.TYPE_FLAT, n_const.TYPE_VLAN]
+
     def initialize(self):
         """Perform driver initialization.
 
@@ -112,7 +102,7 @@ class UnifiMechDriver(api.MechanismDriver):
             LOG.warning("UniFi controller URL not configured. Driver disabled.")
             return
 
-        if not CONF.unifi.username or not CONF.unifi.password:
+        if not CONF.unifi.apikey and (not CONF.unifi.username or not CONF.unifi.password):
             LOG.warning("UniFi credentials not configured. Driver disabled.")
             return
 
@@ -135,10 +125,6 @@ class UnifiMechDriver(api.MechanismDriver):
         Returns:
             A context manager that yields a controller client
         """
-        if CONF.unifi.controller not in self._controllers:
-            # Empty dict for config since we're using CONF directly in get_unifi_api
-            self._controllers[CONF.unifi.host] = {}
-
         return self._get_api(CONF.unifi.host)
 
     @contextmanager
@@ -199,14 +185,16 @@ class UnifiMechDriver(api.MechanismDriver):
         cause the deletion of the resource.
         """
         network = context.current
+        network_type = network.get(provider_net.NETWORK_TYPE)
+
         # Only handle networks with segmentation ID (VLANs)
         network_id = network['id']
 
         # Skip non-VLAN networks or external networks
-        if network.get('provider:network_type') != 'vlan' or network.get('router:external'):
+        if network_type != 'vlan' or network.get('router:external'):
             return
 
-        segmentation_id = network.get('provider:segmentation_id')
+        segmentation_id = network.get(provider_net.SEGMENTATION_ID)
         if not segmentation_id:
             return
 
@@ -286,12 +274,12 @@ class UnifiMechDriver(api.MechanismDriver):
         network = context.current
         original_network = context.original
 
-        if (network.get('provider:network_type') != 'vlan' or
-                original_network.get('provider:network_type') != 'vlan'):
+        if (network.get(provider_net.NETWORK_TYPE) != 'vlan' or
+                original_network.get(provider_net.NETWORK_TYPE) != 'vlan'):
             return
 
-        new_segmentation_id = network.get('provider:segmentation_id')
-        old_segmentation_id = original_network.get('provider:segmentation_id')
+        new_segmentation_id = network.get(provider_net.SEGMENTATION_ID)
+        old_segmentation_id = original_network.get(provider_net.SEGMENTATION_ID)
 
         # If VLAN ID hasn't changed, nothing to do
         if new_segmentation_id == old_segmentation_id:
@@ -369,10 +357,10 @@ class UnifiMechDriver(api.MechanismDriver):
         network = context.current
 
         # Only handle networks with segmentation ID (VLANs)
-        if network.get('provider:network_type') != 'vlan':
+        if network.get(provider_net.NETWORK_TYPE) != 'vlan':
             return
 
-        segmentation_id = network.get('provider:segmentation_id')
+        segmentation_id = network.get(provider_net.SEGMENTATION_ID)
         if not segmentation_id:
             return
 
@@ -543,10 +531,10 @@ class UnifiMechDriver(api.MechanismDriver):
             return
 
         # Only handle networks with segmentation ID (VLANs)
-        if network.get('provider:network_type') != 'vlan':
+        if network.get(provider_net.NETWORK_TYPE) != 'vlan':
             return
 
-        segmentation_id = network.get('provider:segmentation_id')
+        segmentation_id = network.get(provider_net.SEGMENTATION_ID)
         if not segmentation_id:
             return
 
@@ -638,10 +626,10 @@ class UnifiMechDriver(api.MechanismDriver):
                 return
 
         # Only handle networks with segmentation ID (VLANs)
-        if network.get('provider:network_type') != 'vlan':
+        if network.get(provider_net.NETWORK_TYPE) != 'vlan':
             return
 
-        segmentation_id = network.get('provider:segmentation_id')
+        segmentation_id = network.get(provider_net.SEGMENTATION_ID)
         if not segmentation_id:
             return
 
@@ -727,7 +715,6 @@ class UnifiMechDriver(api.MechanismDriver):
             LOG.error('Failed to unconfigure port %s on switch %s: %s',
                      mapping['port_id'], mapping['switch_id'], e)
 
-    @context_validator()
     @error_handler
     def bind_port(self, context) -> None:
         """Attempt to bind a port.

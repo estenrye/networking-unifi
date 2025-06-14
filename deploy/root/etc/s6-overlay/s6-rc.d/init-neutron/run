@@ -1,4 +1,5 @@
 #!/command/with-contenv sh
+# shellcheck shell=sh
 
 NEUTRON_CONF="${NEUTRON_CONF:-/etc/neutron/neutron.conf}"
 
@@ -16,9 +17,13 @@ if [ "${NEUTRON_USE_MARIADB}" = "true" ]; then
     fi
 
     if [ -n "${MARIADB_CONNECTION}" ]; then
+      crudini --del "${NEUTRON_CONF}" database engine
       crudini --set "${NEUTRON_CONF}" database connection "${MARIADB_CONNECTION}"
     fi
 fi
+
+crudini --set "${NEUTRON_CONF}" DEFAULT auth_strategy noauth
+crudini --set "${NEUTRON_CONF}" DEFAULT core_plugin unifi
 
 neutron-db-manage --config-file "${NEUTRON_CONF}" upgrade heads || {
   echo "ERROR: Database sync failed"

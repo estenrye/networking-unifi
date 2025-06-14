@@ -657,6 +657,26 @@ files = [
 markers = {dev = "sys_platform == \"win32\" or platform_system == \"Windows\"", docs = "sys_platform == \"win32\""}
 
 [[package]]
+name = "cotyledon"
+version = "2.0.0"
+description = "Cotyledon provides a framework for defining long-running services."
+optional = false
+python-versions = ">=3.9"
+groups = ["main"]
+files = [
+    {file = "cotyledon-2.0.0-py3-none-any.whl", hash = "sha256:a577f3d0508bd6b9ae5920ef09ab395a4afef931a9ef8c303ea9345a72200ecd"},
+    {file = "cotyledon-2.0.0.tar.gz", hash = "sha256:b11b7884a2b735c415a81f6b6aa3a2e233c68d012e12df9b6092d29737224f19"},
+]
+
+[package.dependencies]
+setproctitle = {version = "*", markers = "sys_platform != \"win32\""}
+
+[package.extras]
+doc = ["sphinx", "sphinx_rtd_theme"]
+oslo = ["oslo.config (>=3.14.0)"]
+test = ["mock", "pytest", "pytest-cov", "pytest-xdist"]
+
+[[package]]
 name = "coverage"
 version = "7.8.2"
 description = "Code coverage measurement for Python"
@@ -2217,6 +2237,34 @@ scp = ">=0.13.6"
 textfsm = ">=1.1.3"
 
 [[package]]
+name = "networking-baremetal"
+version = "6.6.0"
+description = "Neutron plugin that provides deep Ironic/Neutron integration."
+optional = false
+python-versions = ">=3.9"
+groups = ["main"]
+files = [
+    {file = "networking_baremetal-6.6.0-py3-none-any.whl", hash = "sha256:cefd7cc6d9390af50042cd4c1a8efd35e2132c7e78d9cb275d891edd1c829571"},
+    {file = "networking_baremetal-6.6.0.tar.gz", hash = "sha256:f967bf42cc514b504c089defb37c5f5b2bcd882e107294cf90c31c0abbf9dbb0"},
+]
+
+[package.dependencies]
+keystoneauth1 = ">=3.14.0"
+ncclient = ">=0.6.9"
+neutron = ">=14.0.0.0b1"
+neutron-lib = ">=1.28.0"
+openstacksdk = ">=0.31.2"
+"oslo.config" = ">=9.7.1"
+"oslo.i18n" = ">=6.5.1"
+"oslo.log" = ">=7.1.0"
+"oslo.messaging" = ">=16.1.0"
+"oslo.service" = {version = ">=4.2.0", extras = ["threading"]}
+"oslo.utils" = ">=8.2.0"
+pbr = ">=6.0.0"
+tenacity = ">=6.0.0"
+tooz = ">=6.3.0"
+
+[[package]]
 name = "neutron"
 version = "26.0.0"
 description = "OpenStack Networking"
@@ -2947,8 +2995,10 @@ files = [
 ]
 
 [package.dependencies]
+cotyledon = {version = ">=2.0.0", optional = true, markers = "extra == \"threading\""}
 debtcollector = ">=1.2.0"
 eventlet = ">=0.27.0"
+futurist = {version = ">=3.1.1", optional = true, markers = "extra == \"threading\""}
 greenlet = ">=0.4.15"
 "oslo.concurrency" = ">=3.25.0"
 "oslo.config" = ">=5.1.0"
@@ -5316,4 +5366,4 @@ propcache = ">=0.2.1"
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.12.0,<4.0"
-content-hash = "0e84a8e85ec3bff4f5c471c9e7d61690c6ad395a60eb22696fd0a9e1ef4fb1fc"
+content-hash = "07f2f1e63020cb20caf5187801075872332eb32014833294d9fce1d1c4f4aa62"

@@ -29,8 +29,15 @@ async def get_unifi_api(
     unsafe: bool = True
     if CONF.unifi.verify_ssl:
         unsafe = False
+        # ssl.Purpose.SERVER_AUTH, not CLIENT_AUTH: this context is used to
+        # make an *outgoing* connection as a client verifying the remote
+        # server's certificate -- CLIENT_AUTH configures a context for the
+        # opposite role (a server verifying incoming client certs) and
+        # cannot be used to open a client socket at all. Confirmed live: a
+        # real `openstack network create` failed with "Cannot create a
+        # client socket with a PROTOCOL_TLS_SERVER context".
         ssl_context = ssl.create_default_context(
-            purpose=ssl.Purpose.CLIENT_AUTH,
+            purpose=ssl.Purpose.SERVER_AUTH,
         )
         
     session = ClientSession(

@@ -33,9 +33,17 @@ jobs:
           cache: "poetry"
 
       - name: build release distributions
+        env:
+          GIT_REF_NAME: ${{ github.ref_name }}
         run: |-
-          poetry self add poetry-git-version-plugin
-          poetry git-version
+          # poetry-git-version-plugin (what upstream uses) derived a
+          # nonsensical "1.0.9.dev3" version even from a clean tree with
+          # this exact tag at HEAD -- confirmed live, not chasing further
+          # since a plain `poetry version` from the tag name is simpler
+          # and more reliable anyway (same pattern neutron-ml2-guardian's
+          # own CI uses for its Helm chart version).
+          version="${GIT_REF_NAME#v}"
+          poetry version "$version"
           poetry build --format=wheel
           poetry build --format=sdist
         # `poetry install` deliberately removed: this fork's whole point is

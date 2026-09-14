@@ -249,8 +249,19 @@ class UnifiMechDriver(api.MechanismDriver):
 
                 nat_policies = None
                 try:
+                    # ApiRequestV2.decode() always wraps a V2 response as
+                    # {"meta": ..., "data": [...]}, even though a bare GET
+                    # against this endpoint returns a plain JSON array --
+                    # confirmed by reading the installed aiounifi package
+                    # directly. Unwrap it here; every other place in this
+                    # file that touches a V2 endpoint goes through
+                    # aiounifi's own cached APIHandler (.items()), which
+                    # already does this unwrapping internally, so this is
+                    # the first call site in this driver that has to do it
+                    # by hand.
                     nat_policies = loop.run_until_complete(
-                        controller.request(NatPolicyListRequest.create()))
+                        controller.request(NatPolicyListRequest.create())
+                    ).get('data', [])
                 except Exception as e:
                     LOG.error('Sync: failed to list NAT policies, skipping '
                              'NAT66 sync this cycle: %s', e)
@@ -314,8 +325,11 @@ class UnifiMechDriver(api.MechanismDriver):
 
                 self._cleanup_orphaned_networks(controller, loop, known_network_ids)
                 if nat_policies is not None:
-                    self._cleanup_orphaned_nat66_policies(
-                        controller, loop, nat_policies, known_tagged_subnet_ids)
+                    try:
+                        self._cleanup_orphaned_nat66_policies(
+                            controller, loop, nat_policies, known_tagged_subnet_ids)
+                    except Exception as e:
+                        LOG.error('Sync: NAT66 orphan cleanup failed: %s', e)
 
         except Exception as e:
             LOG.error('Sync: reconciliation pass failed: %s', e)

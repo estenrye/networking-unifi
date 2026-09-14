@@ -38,6 +38,11 @@ unifi_opts = [
     cfg.StrOpt('site',
                default='default',
                help='UniFi site name to manage'),
+    cfg.StrOpt('default_firewall_zone',
+               default=None,
+               help='Name of the UniFi firewall zone that VLAN networks '
+                    'created by this driver should be assigned to. If '
+                    'unset, no firewall zone assignment is made.'),
     cfg.BoolOpt('verify_ssl',
                 default=True,
                 help='Verify SSL certificates for UniFi controller connection'),

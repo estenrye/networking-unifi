@@ -39,6 +39,7 @@ from unifi_ml2_driver import exceptions
 from unifi_ml2_driver.dns_handler import UnifiDnsHandler
 from unifi_ml2_driver.unifi_api import get_unifi_api
 from aiounifi.models.network import NetworkCreateRequest, NetworkDeleteRequest, NetworkUpdateRequest, Network, TypedNetwork
+from aiounifi.models.firewall_zone import FirewallZoneUpdateRequest, TypedFirewallZone
 from aiounifi.models.device import Device, DeviceListRequest, TypedDevicePortOverrides, DeviceSetPortProfileRequest
 from unifi_ml2_driver import trunk_driver
 
@@ -214,7 +215,9 @@ class UnifiMechDriver(api.MechanismDriver):
                 else:
                     LOG.debug('Network %s (VLAN %s) already exists in UniFi controller',
                              network_id, segmentation_id)
-                    
+
+                self._assign_network_to_default_zone(controller, loop, network_id)
+
         except Exception as e:
             LOG.error('Failed to create network %s (VLAN %s) in UniFi controller: %s',
                      network_id, segmentation_id, e)
@@ -307,7 +310,9 @@ class UnifiMechDriver(api.MechanismDriver):
                 
                 LOG.info('Network %s updated from VLAN %s to VLAN %s in UniFi controller',
                          network_id, old_segmentation_id, new_segmentation_id)
-                
+
+                self._assign_network_to_default_zone(controller, loop, network_id)
+
         except Exception as e:
             LOG.error('Failed to update network %s from VLAN %s to VLAN %s: %s',
                      network_id, old_segmentation_id, new_segmentation_id, e)
@@ -368,6 +373,8 @@ class UnifiMechDriver(api.MechanismDriver):
                         break
                 
                 if target_network:
+                    self._unassign_network_from_default_zone(controller, loop, target_network.id)
+
                     # Delete network in UniFi controller
                     loop.run_until_complete(
                         controller.request(NetworkDeleteRequest.create(target_network.id))
@@ -583,6 +590,73 @@ class UnifiMechDriver(api.MechanismDriver):
             # Log but don't raise to prevent subnet deletion from failing
             LOG.error('Failed to clear subnet %s (VLAN %s) from UniFi controller: %s',
                      subnet_id, segmentation_id, e)
+
+    def _assign_network_to_default_zone(self, controller, loop, network_id):
+        """Assign a UniFi network to the configured default firewall zone.
+
+        Firewall zone membership lives on the zone object itself
+        (`network_ids`), not on the network's own networkconf, so this
+        looks up the configured zone by name and adds the network's ID
+        to it if it isn't already there. No-op if
+        CONF.unifi.default_firewall_zone is unset.
+
+        Args:
+            controller: An active UniFi controller client
+            loop: The asyncio event loop to run requests on
+            network_id: The UniFi network's _id to assign
+        """
+        zone_name = CONF.unifi.default_firewall_zone
+        if not zone_name:
+            return
+
+        loop.run_until_complete(controller.firewall_zones.update())
+        zone = next(
+            (z for _, z in controller.firewall_zones.items() if z.name == zone_name),
+            None
+        )
+        if not zone:
+            LOG.warning('Cannot assign network %s to firewall zone: zone %r not found',
+                       network_id, zone_name)
+            return
+
+        if network_id in zone.network_ids:
+            return
+
+        updated_zone = dict(zone.raw)
+        updated_zone['network_ids'] = list(zone.network_ids) + [network_id]
+
+        loop.run_until_complete(
+            controller.request(FirewallZoneUpdateRequest.create(TypedFirewallZone(updated_zone)))
+        )
+        LOG.info('Assigned UniFi network %s to firewall zone %s', network_id, zone_name)
+
+    def _unassign_network_from_default_zone(self, controller, loop, network_id):
+        """Remove a UniFi network from the configured default firewall zone.
+
+        Args:
+            controller: An active UniFi controller client
+            loop: The asyncio event loop to run requests on
+            network_id: The UniFi network's _id to remove
+        """
+        zone_name = CONF.unifi.default_firewall_zone
+        if not zone_name:
+            return
+
+        loop.run_until_complete(controller.firewall_zones.update())
+        zone = next(
+            (z for _, z in controller.firewall_zones.items() if z.name == zone_name),
+            None
+        )
+        if not zone or network_id not in zone.network_ids:
+            return
+
+        updated_zone = dict(zone.raw)
+        updated_zone['network_ids'] = [nid for nid in zone.network_ids if nid != network_id]
+
+        loop.run_until_complete(
+            controller.request(FirewallZoneUpdateRequest.create(TypedFirewallZone(updated_zone)))
+        )
+        LOG.info('Removed UniFi network %s from firewall zone %s', network_id, zone_name)
 
     def _unifi_network_for_vlan(self, controller, loop, segmentation_id):
         """Find the UniFi network config matching a Neutron VLAN segment.

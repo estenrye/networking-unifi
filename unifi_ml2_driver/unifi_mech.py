@@ -612,6 +612,10 @@ class UnifiMechDriver(api.MechanismDriver):
         to it if it isn't already there. No-op if
         CONF.unifi.default_firewall_zone is unset.
 
+        Best-effort: any failure is logged, never raised, so a firewall
+        zone problem (a typo'd zone name, an API quirk) can't take down
+        the core network/subnet sync that already succeeded.
+
         Args:
             controller: An active UniFi controller client
             loop: The asyncio event loop to run requests on
@@ -621,29 +625,39 @@ class UnifiMechDriver(api.MechanismDriver):
         if not zone_name:
             return
 
-        loop.run_until_complete(controller.firewall_zones.update())
-        zone = next(
-            (z for _, z in controller.firewall_zones.items() if z.name == zone_name),
-            None
-        )
-        if not zone:
-            LOG.warning('Cannot assign network %s to firewall zone: zone %r not found',
-                       network_id, zone_name)
-            return
+        try:
+            loop.run_until_complete(controller.firewall_zones.update())
+            zone = next(
+                (z for _, z in controller.firewall_zones.items() if z.name == zone_name),
+                None
+            )
+            if not zone:
+                LOG.warning('Cannot assign network %s to firewall zone: zone %r not found',
+                           network_id, zone_name)
+                return
 
-        if network_id in zone.network_ids:
-            return
+            if network_id in zone.network_ids:
+                return
 
-        updated_zone = dict(zone.raw)
-        updated_zone['network_ids'] = list(zone.network_ids) + [network_id]
+            updated_zone = dict(zone.raw)
+            updated_zone.pop('attr_no_edit', None)
+            updated_zone['network_ids'] = list(zone.network_ids) + [network_id]
 
-        loop.run_until_complete(
-            controller.request(FirewallZoneUpdateRequest.create(TypedFirewallZone(updated_zone)))
-        )
-        LOG.info('Assigned UniFi network %s to firewall zone %s', network_id, zone_name)
+            loop.run_until_complete(
+                controller.request(FirewallZoneUpdateRequest.create(TypedFirewallZone(updated_zone)))
+            )
+            LOG.info('Assigned UniFi network %s to firewall zone %s', network_id, zone_name)
+        except Exception as e:
+            LOG.error('Failed to assign network %s to firewall zone %s: %s',
+                     network_id, zone_name, e)
 
     def _unassign_network_from_default_zone(self, controller, loop, network_id):
         """Remove a UniFi network from the configured default firewall zone.
+
+        Best-effort: any failure is logged, never raised -- this runs
+        during network deletion, and must never block a resource from
+        being removed (matching delete_network_postcommit's own
+        non-raising convention).
 
         Args:
             controller: An active UniFi controller client
@@ -654,21 +668,26 @@ class UnifiMechDriver(api.MechanismDriver):
         if not zone_name:
             return
 
-        loop.run_until_complete(controller.firewall_zones.update())
-        zone = next(
-            (z for _, z in controller.firewall_zones.items() if z.name == zone_name),
-            None
-        )
-        if not zone or network_id not in zone.network_ids:
-            return
+        try:
+            loop.run_until_complete(controller.firewall_zones.update())
+            zone = next(
+                (z for _, z in controller.firewall_zones.items() if z.name == zone_name),
+                None
+            )
+            if not zone or network_id not in zone.network_ids:
+                return
 
-        updated_zone = dict(zone.raw)
-        updated_zone['network_ids'] = [nid for nid in zone.network_ids if nid != network_id]
+            updated_zone = dict(zone.raw)
+            updated_zone.pop('attr_no_edit', None)
+            updated_zone['network_ids'] = [nid for nid in zone.network_ids if nid != network_id]
 
-        loop.run_until_complete(
-            controller.request(FirewallZoneUpdateRequest.create(TypedFirewallZone(updated_zone)))
-        )
-        LOG.info('Removed UniFi network %s from firewall zone %s', network_id, zone_name)
+            loop.run_until_complete(
+                controller.request(FirewallZoneUpdateRequest.create(TypedFirewallZone(updated_zone)))
+            )
+            LOG.info('Removed UniFi network %s from firewall zone %s', network_id, zone_name)
+        except Exception as e:
+            LOG.error('Failed to remove network %s from firewall zone %s: %s',
+                     network_id, zone_name, e)
 
     def _unifi_network_for_vlan(self, controller, loop, segmentation_id):
         """Find the UniFi network config matching a Neutron VLAN segment.

@@ -216,7 +216,13 @@ class UnifiMechDriver(api.MechanismDriver):
                     LOG.debug('Network %s (VLAN %s) already exists in UniFi controller',
                              network_id, segmentation_id)
 
-                self._assign_network_to_default_zone(controller, loop, network_id)
+                # UniFi assigns its own _id on create (typically a Mongo
+                # ObjectId), ignoring whatever "_id" was requested above --
+                # zone membership has to reference that real id, not the
+                # Neutron network_id.
+                unifi_network = self._unifi_network_for_vlan(controller, loop, segmentation_id)
+                if unifi_network:
+                    self._assign_network_to_default_zone(controller, loop, unifi_network.id)
 
         except Exception as e:
             LOG.error('Failed to create network %s (VLAN %s) in UniFi controller: %s',
@@ -311,7 +317,13 @@ class UnifiMechDriver(api.MechanismDriver):
                 LOG.info('Network %s updated from VLAN %s to VLAN %s in UniFi controller',
                          network_id, old_segmentation_id, new_segmentation_id)
 
-                self._assign_network_to_default_zone(controller, loop, network_id)
+                # UniFi assigns its own _id on create (typically a Mongo
+                # ObjectId), ignoring whatever "_id" was requested above --
+                # zone membership has to reference that real id, not the
+                # Neutron network_id.
+                unifi_network = self._unifi_network_for_vlan(controller, loop, new_segmentation_id)
+                if unifi_network:
+                    self._assign_network_to_default_zone(controller, loop, unifi_network.id)
 
         except Exception as e:
             LOG.error('Failed to update network %s from VLAN %s to VLAN %s: %s',

@@ -46,6 +46,10 @@ from aiounifi.models.network import NetworkCreateRequest, NetworkDeleteRequest, 
 from aiounifi.models.firewall_zone import FirewallZoneUpdateRequest, TypedFirewallZone
 from aiounifi.models.device import Device, DeviceListRequest, TypedDevicePortOverrides, DeviceSetPortProfileRequest
 from unifi_ml2_driver import trunk_driver
+from unifi_ml2_driver.nat_policy import (
+    NatPolicyCreateRequest, NatPolicyDeleteRequest, NatPolicyListRequest,
+    NatPolicyUpdateRequest, TypedNatPolicy,
+)
 
 LOG = logging.getLogger(__name__)
 
@@ -60,6 +64,8 @@ class UnifiMechDriver(api.MechanismDriver):
 
     _ORPHAN_NETWORK_NAME_RE = re.compile(
         r'^OpenStack-(?P<netid>[0-9a-f-]{36})-VLAN(?P<vlan>\d+)$')
+    _NAT66_POLICY_DESCRIPTION_RE = re.compile(
+        r'^OpenStack-NAT66-(?P<subnetid>[0-9a-f-]{36})$')
 
     def __init__(self):
         self.controller = None
@@ -226,6 +232,31 @@ class UnifiMechDriver(api.MechanismDriver):
                 loop.run_until_complete(controller.networks.update())
                 loop.run_until_complete(controller.firewall_zones.update())
 
+                # NAT66 lookup structures, built once per pass rather than
+                # per subnet: a name->network map covering every networkconf
+                # (WAN uplinks and VPN tunnels are both networkconf entries,
+                # confirmed live -- purpose "wan" and "vpn-client"
+                # respectively), and the sole WAN if there's exactly one
+                # (the auto-detect fallback; deliberately never auto-detects
+                # a VPN tunnel, only ever used when explicitly named).
+                all_networks_by_name = {
+                    net.name: net for _, net in controller.networks.items()
+                }
+                wan_networks = [
+                    net for _, net in controller.networks.items() if net.purpose == 'wan'
+                ]
+                default_wan_id = wan_networks[0].id if len(wan_networks) == 1 else None
+
+                nat_policies = None
+                try:
+                    nat_policies = loop.run_until_complete(
+                        controller.request(NatPolicyListRequest.create()))
+                except Exception as e:
+                    LOG.error('Sync: failed to list NAT policies, skipping '
+                             'NAT66 sync this cycle: %s', e)
+
+                known_tagged_subnet_ids = set()
+
                 for network in vlan_networks:
                     segmentation_id = network.get('provider:segmentation_id')
                     if not segmentation_id:
@@ -257,12 +288,34 @@ class UnifiMechDriver(api.MechanismDriver):
                                      subnet_id, e)
                             continue
 
-                        if (subnet.get('ip_version') == 6
-                                and CONF.unifi.nat66_tag in (subnet.get('tags') or [])):
-                            LOG.info('Subnet %s tagged for NAT66 masquerade '
-                                    '(rule creation not yet implemented)', subnet_id)
+                        if subnet.get('ip_version') == 6 and nat_policies is not None:
+                            tagged = CONF.unifi.nat66_tag in (subnet.get('tags') or [])
+                            try:
+                                if tagged:
+                                    known_tagged_subnet_ids.add(subnet_id)
+                                    egress_interface_id = self._resolve_nat66_egress_interface(
+                                        subnet, default_wan_id, all_networks_by_name)
+                                    if egress_interface_id:
+                                        self._reconcile_nat66_policy(
+                                            controller, loop, subnet,
+                                            egress_interface_id, nat_policies)
+                                    else:
+                                        LOG.warning(
+                                            'Sync: subnet %s is tagged for NAT66 but no '
+                                            'egress interface could be resolved -- '
+                                            'leaving any existing policy unchanged',
+                                            subnet_id)
+                                else:
+                                    self._remove_nat66_policy(
+                                        controller, loop, subnet_id, nat_policies)
+                            except Exception as e:
+                                LOG.error('Sync: failed to reconcile NAT66 policy for '
+                                         'subnet %s: %s', subnet_id, e)
 
                 self._cleanup_orphaned_networks(controller, loop, known_network_ids)
+                if nat_policies is not None:
+                    self._cleanup_orphaned_nat66_policies(
+                        controller, loop, nat_policies, known_tagged_subnet_ids)
 
         except Exception as e:
             LOG.error('Sync: reconciliation pass failed: %s', e)
@@ -303,6 +356,214 @@ class UnifiMechDriver(api.MechanismDriver):
             except Exception as e:
                 LOG.error('Sync: failed to delete orphaned UniFi network %s (%r): %s',
                          unifi_network.id, unifi_network.name, e)
+
+    def _resolve_nat66_egress_interface(self, subnet, default_wan_id, all_networks_by_name):
+        """Resolve which UniFi network/VPN tunnel a subnet's NAT66 policy should egress through.
+
+        Resolution order:
+        1. A per-subnet CONF.unifi.nat66_egress_tag_prefix tag, matched by
+           exact name against every networkconf (WAN uplinks and VPN
+           tunnels are both networkconf entries -- confirmed live,
+           purpose "wan" and "vpn-client" respectively -- so this works
+           for either without needing to know which kind it is).
+        2. CONF.unifi.nat66_egress_interface (site-wide default), same
+           any-purpose name match.
+        3. The sole purpose=="wan" network, if there's exactly one.
+           Deliberately never auto-detects a VPN tunnel -- only used when
+           explicitly named via (1) or (2).
+
+        Returns None if nothing resolves. Callers decide what that means
+        for their own call site (skip create/update; a removal doesn't
+        need this at all).
+
+        Args:
+            subnet: The Neutron subnet dict
+            default_wan_id: The sole WAN network's UniFi _id, or None if
+                zero or more than one WAN network exists
+            all_networks_by_name: dict of {network name: aiounifi Network}
+                covering every networkconf, built once per reconciliation
+                pass
+        """
+        tag_prefix = CONF.unifi.nat66_egress_tag_prefix
+        for tag in subnet.get('tags') or []:
+            if tag.startswith(tag_prefix):
+                name = tag[len(tag_prefix):]
+                match = all_networks_by_name.get(name)
+                if match:
+                    return match.id
+                LOG.warning('Sync: subnet %s requests NAT66 egress interface %r '
+                           'via tag, but no UniFi network or VPN tunnel with '
+                           'that exact name exists', subnet['id'], name)
+                return None
+
+        configured_name = CONF.unifi.nat66_egress_interface
+        if configured_name:
+            match = all_networks_by_name.get(configured_name)
+            if match:
+                return match.id
+            LOG.warning('Sync: nat66_egress_interface %r not found among UniFi '
+                       'networks/VPN tunnels', configured_name)
+            return None
+
+        return default_wan_id
+
+    def _nat66_policy_description(self, subnet_id):
+        """Naming convention used to find this driver's own NAT66 policies.
+
+        The `description` field is the only reliable identity anchor
+        available on a NAT policy -- there's no dedicated field to stash
+        a Neutron subnet id the way networkconf's `name` does for VLANs.
+        """
+        return f"OpenStack-NAT66-{subnet_id}"
+
+    def _reconcile_nat66_policy(self, controller, loop, subnet, egress_interface_id, nat_policies):
+        """Ensure a NAT66 masquerade policy exists and is correct for `subnet`.
+
+        Only called when the subnet is tagged for NAT66 and an egress
+        interface was successfully resolved for it -- removal (untagged)
+        is handled separately by _remove_nat66_policy, and "tagged but
+        unresolvable" is handled by the caller leaving things alone
+        entirely, never here.
+
+        Args:
+            controller: An active UniFi controller client
+            loop: The asyncio event loop to run requests on
+            subnet: The Neutron subnet dict (ip_version 6)
+            egress_interface_id: The UniFi networkconf _id to masquerade behind
+            nat_policies: The full NAT policy list fetched once for this
+                reconciliation pass (may be slightly stale by the time a
+                later subnet in the same pass reads it, which is fine --
+                each subnet's description key is unique, so this never
+                causes cross-subnet interference)
+        """
+        subnet_id = subnet['id']
+        cidr = subnet.get('cidr')
+        if not cidr:
+            return
+
+        description = self._nat66_policy_description(subnet_id)
+        existing = next(
+            (p for p in nat_policies if p.get('description') == description), None)
+
+        desired_source_filter = {
+            'filter_type': 'ADDRESS_AND_PORT',
+            'address': cidr,
+            'firewall_group_ids': [],
+            'invert_address': False,
+            'invert_port': False,
+        }
+
+        if existing:
+            if (existing.get('source_filter', {}).get('address') == cidr
+                    and existing.get('out_interface') == egress_interface_id
+                    and existing.get('enabled')):
+                return
+
+            # Minimal payload confirmed live: only these fields need to be
+            # sent on write, plus _id for the update path -- is_predefined/
+            # rule_index/setting_preference are GET-only/server-computed
+            # (see nat_policy.py's module docstring).
+            updated = TypedNatPolicy({
+                '_id': existing['_id'],
+                'description': description,
+                'destination_filter': existing.get('destination_filter') or {
+                    'filter_type': 'NONE', 'firewall_group_ids': [],
+                    'invert_address': False, 'invert_port': False,
+                },
+                'enabled': True,
+                'exclude': existing.get('exclude', False),
+                'ip_version': 'IPV6',
+                'logging': existing.get('logging', False),
+                'out_interface': egress_interface_id,
+                'pppoe_use_base_interface': existing.get('pppoe_use_base_interface', False),
+                'protocol': existing.get('protocol', 'all'),
+                'source_filter': desired_source_filter,
+                'type': 'MASQUERADE',
+            })
+            loop.run_until_complete(
+                controller.request(NatPolicyUpdateRequest.create(updated)))
+            LOG.info('Sync: corrected drifted NAT66 policy for subnet %s', subnet_id)
+            return
+
+        new_policy = TypedNatPolicy({
+            'description': description,
+            'destination_filter': {
+                'filter_type': 'NONE',
+                'firewall_group_ids': [],
+                'invert_address': False,
+                'invert_port': False,
+            },
+            'enabled': True,
+            'exclude': False,
+            'ip_version': 'IPV6',
+            'logging': False,
+            'out_interface': egress_interface_id,
+            'pppoe_use_base_interface': False,
+            'protocol': 'all',
+            'source_filter': desired_source_filter,
+            'type': 'MASQUERADE',
+        })
+        loop.run_until_complete(
+            controller.request(NatPolicyCreateRequest.create(new_policy)))
+        LOG.info('Sync: created NAT66 masquerade policy for subnet %s (%s)',
+                subnet_id, cidr)
+
+    def _remove_nat66_policy(self, controller, loop, subnet_id, nat_policies):
+        """Delete subnet_id's NAT66 policy if one exists (subnet is untagged).
+
+        Args:
+            controller: An active UniFi controller client
+            loop: The asyncio event loop to run requests on
+            subnet_id: The Neutron subnet id
+            nat_policies: The full NAT policy list fetched once for this
+                reconciliation pass
+        """
+        description = self._nat66_policy_description(subnet_id)
+        existing = next(
+            (p for p in nat_policies if p.get('description') == description), None)
+        if not existing:
+            return
+
+        loop.run_until_complete(
+            controller.request(NatPolicyDeleteRequest.create(existing['_id'])))
+        LOG.info('Sync: removed NAT66 policy for subnet %s (untagged)', subnet_id)
+
+    def _cleanup_orphaned_nat66_policies(self, controller, loop, nat_policies, known_tagged_subnet_ids):
+        """Delete NAT66 policies whose subnet no longer exists in Neutron.
+
+        Only ever touches policies whose description matches this
+        driver's own naming convention (_NAT66_POLICY_DESCRIPTION_RE) --
+        the safety boundary against ever touching a manually created NAT
+        policy, same reasoning as _cleanup_orphaned_networks. A subnet
+        that still exists but had its nat66_tag removed is already
+        handled by _remove_nat66_policy in the main per-subnet loop; this
+        is specifically for a subnet deleted from Neutron entirely, which
+        never appears in that loop at all and would otherwise leave its
+        NAT policy dangling forever.
+
+        known_tagged_subnet_ids must come from a successful pass over
+        every currently-existing subnet in the same reconciliation cycle
+        (see the caller) -- a partial set would otherwise make every
+        currently-tagged subnet's policy look orphaned.
+        """
+        for policy in nat_policies:
+            description = policy.get('description', '')
+            match = self._NAT66_POLICY_DESCRIPTION_RE.match(description)
+            if not match:
+                continue
+
+            subnet_id = match.group('subnetid')
+            if subnet_id in known_tagged_subnet_ids:
+                continue
+
+            try:
+                loop.run_until_complete(
+                    controller.request(NatPolicyDeleteRequest.create(policy['_id'])))
+                LOG.info('Sync: deleted orphaned NAT66 policy for subnet %s (%r)',
+                        subnet_id, description)
+            except Exception as e:
+                LOG.error('Sync: failed to delete orphaned NAT66 policy for '
+                         'subnet %s (%r): %s', subnet_id, description, e)
 
     def create_network_precommit(self, context):
         """Allocate resources for a new network.

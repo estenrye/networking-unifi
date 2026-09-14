@@ -84,9 +84,34 @@ unifi_opts = [
     cfg.StrOpt('nat66_tag',
                default='nat66=true',
                help='Tag that marks an IPv6 subnet for NAT66 masquerade. '
-                    'Currently detected and logged during reconciliation '
-                    'only -- rule creation is not yet implemented (no '
-                    'known UniFi API for it; see the driver README).'),
+                    'A subnet carrying this exact tag gets a UniFi NAT '
+                    'policy (Policy Engine -> Policy Table, type '
+                    'MASQUERADE) masquerading its CIDR behind the '
+                    'resolved egress interface (see '
+                    'nat66_egress_tag_prefix/nat66_egress_interface); '
+                    'removing the tag removes the policy.'),
+    cfg.StrOpt('nat66_egress_tag_prefix',
+               default='nat66-egress=',
+               help='Tag prefix for a per-subnet NAT66 egress interface '
+                    'override, e.g. a subnet tagged '
+                    '"nat66-egress=Route64.org" masquerades through the '
+                    'UniFi network or VPN tunnel named "Route64.org" '
+                    '(confirmed live: VPN tunnels are networkconf '
+                    'entries too, e.g. purpose=vpn-client) regardless of '
+                    'nat66_egress_interface. Only consulted on subnets '
+                    'already carrying nat66_tag.'),
+    cfg.StrOpt('nat66_egress_interface',
+               default=None,
+               help='Exact name of the UniFi network or VPN tunnel '
+                    '(a networkconf, matched by name regardless of '
+                    'purpose -- WAN, VPN client/server, etc.) to use as '
+                    'the default out_interface for NAT66 policies on '
+                    'subnets with no per-subnet nat66_egress_tag_prefix '
+                    'tag. If unset, the sole purpose=wan network is used '
+                    'automatically when there is exactly one; with more '
+                    'than one WAN and no per-subnet override, NAT66 sync '
+                    'is skipped for that subnet (logged) rather than '
+                    'guessing which uplink to masquerade behind.'),
     cfg.BoolOpt('use_all_networks_for_trunk',
                 default=True,
                 help='Use "All Networks" option for trunk ports'),

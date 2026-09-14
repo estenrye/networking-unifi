@@ -530,7 +530,10 @@ class UnifiMechDriver(api.MechanismDriver):
             loop: The asyncio event loop to run requests on
             subnet_id: The Neutron subnet id
             nat_policies: The full NAT policy list fetched once for this
-                reconciliation pass
+                reconciliation pass -- mutated in place on a successful
+                delete (the entry removed) so the orphan-cleanup pass
+                later in the same cycle doesn't also try to delete the
+                same now-gone policy and log a spurious 404.
         """
         description = self._nat66_policy_description(subnet_id)
         existing = next(
@@ -540,6 +543,7 @@ class UnifiMechDriver(api.MechanismDriver):
 
         loop.run_until_complete(
             controller.request(NatPolicyDeleteRequest.create(existing['_id'])))
+        nat_policies.remove(existing)
         LOG.info('Sync: removed NAT66 policy for subnet %s (untagged)', subnet_id)
 
     def _cleanup_orphaned_nat66_policies(self, controller, loop, nat_policies, known_tagged_subnet_ids):

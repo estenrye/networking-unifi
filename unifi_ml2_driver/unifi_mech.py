@@ -42,6 +42,7 @@ from oslo_service import loopingcall
 from unifi_ml2_driver import exceptions
 from unifi_ml2_driver.dns_handler import UnifiDnsHandler
 from unifi_ml2_driver.unifi_api import get_unifi_api
+from aiounifi.errors import AiounifiException
 from aiounifi.models.network import NetworkCreateRequest, NetworkDeleteRequest, NetworkUpdateRequest, Network, TypedNetwork
 from aiounifi.models.firewall_zone import FirewallZoneUpdateRequest, TypedFirewallZone
 from aiounifi.models.device import Device, DeviceListRequest, TypedDevicePortOverrides, DeviceSetPortProfileRequest
@@ -475,9 +476,16 @@ class UnifiMechDriver(api.MechanismDriver):
 
             # Minimal payload confirmed live: only these fields need to be
             # sent on write, plus _id for the update path -- is_predefined/
-            # rule_index/setting_preference are GET-only/server-computed
-            # (see nat_policy.py's module docstring).
-            updated = TypedNatPolicy({
+            # setting_preference are confirmed GET-only (a from-scratch
+            # PUT omitting them, built explicitly like this rather than
+            # via dict(existing), is what was actually tested live; naively
+            # copying `existing` would silently reintroduce them and risk
+            # the same "Unrecognized field" rejection firewall zones hit
+            # for their own GET-only fields -- see nat_policy.py's module
+            # docstring). rule_index is the one field pulled from
+            # `existing` on purpose: _write_nat66_policy_with_retry needs
+            # a starting guess and handles it being wrong or absent.
+            updated = {
                 '_id': existing['_id'],
                 'description': description,
                 'destination_filter': existing.get('destination_filter') or {
@@ -491,15 +499,16 @@ class UnifiMechDriver(api.MechanismDriver):
                 'out_interface': egress_interface_id,
                 'pppoe_use_base_interface': existing.get('pppoe_use_base_interface', False),
                 'protocol': existing.get('protocol', 'all'),
+                'rule_index': existing.get('rule_index'),
                 'source_filter': desired_source_filter,
                 'type': 'MASQUERADE',
-            })
-            loop.run_until_complete(
-                controller.request(NatPolicyUpdateRequest.create(updated)))
+            }
+            self._write_nat66_policy_with_retry(
+                controller, loop, NatPolicyUpdateRequest.create, updated)
             LOG.info('Sync: corrected drifted NAT66 policy for subnet %s', subnet_id)
             return
 
-        new_policy = TypedNatPolicy({
+        new_policy = {
             'description': description,
             'destination_filter': {
                 'filter_type': 'NONE',
@@ -516,11 +525,78 @@ class UnifiMechDriver(api.MechanismDriver):
             'protocol': 'all',
             'source_filter': desired_source_filter,
             'type': 'MASQUERADE',
-        })
-        loop.run_until_complete(
-            controller.request(NatPolicyCreateRequest.create(new_policy)))
+        }
+        created = self._write_nat66_policy_with_retry(
+            controller, loop, NatPolicyCreateRequest.create, new_policy)
+        # Feed the real created object (server-assigned _id included) back
+        # into the shared per-pass nat_policies list, so a second subnet
+        # newly tagged in this same cycle sees it (both when computing
+        # its own initial rule_index guess, and, more importantly, so
+        # this one doesn't look orphaned to _cleanup_orphaned_nat66_policies
+        # later in the same pass, which only sees this pass's original
+        # snapshot otherwise).
+        if created:
+            nat_policies.append(created)
         LOG.info('Sync: created NAT66 masquerade policy for subnet %s (%s)',
                 subnet_id, cidr)
+
+    def _write_nat66_policy_with_retry(self, controller, loop, request_factory, policy, max_attempts=50):
+        """POST/PUT a NAT policy, incrementing rule_index on a collision.
+
+        Confirmed live, twice: (1) omitting rule_index on create does NOT
+        get the UDM-SE to auto-assign a free slot the way omitting _id
+        does -- it silently defaults to a value that collides with an
+        already-existing policy as soon as more than one exists
+        ("api.err.NatRuleInvalidParameters: duplicate rule_index", HTTP
+        400). (2) Computing a value from what GET reports isn't reliable
+        either: a policy already occupies its own slot on the server the
+        moment it's rejected an explicit rule_index far outside any
+        value another policy's GET response ever showed -- GET simply
+        doesn't always echo rule_index back, even when the server has one
+        recorded for that policy. Rather than trying to predict a safe
+        value from unreliable data, start from a guess (0, or one past
+        the highest value any policy's GET response *does* report) and
+        let the server's own rejection tell us definitively when a slot
+        is taken, retrying with the next integer until one succeeds.
+        Order doesn't matter for masquerade rules targeting disjoint
+        subnet CIDRs, only uniqueness does, so any free slot is fine.
+
+        Args:
+            controller: An active UniFi controller client
+            loop: The asyncio event loop to run requests on
+            request_factory: NatPolicyCreateRequest.create or
+                NatPolicyUpdateRequest.create
+            policy: The policy dict to write (without rule_index, or with
+                a starting guess -- either way it may be overwritten
+                before the request that actually succeeds)
+
+        Returns:
+            The written policy as the server returned it, or None if the
+            response didn't include one.
+
+        Raises:
+            AiounifiException: if no free rule_index was found within
+                max_attempts, or the server rejected the write for any
+                other reason.
+        """
+        policy = dict(policy)
+        if policy.get('rule_index') is None:
+            policy['rule_index'] = 0
+
+        for _ in range(max_attempts):
+            try:
+                response = loop.run_until_complete(
+                    controller.request(request_factory(TypedNatPolicy(policy))))
+                return (response.get('data') or [None])[0]
+            except AiounifiException as e:
+                error_data = e.args[0] if e.args else {}
+                message = error_data.get('message', '') if isinstance(error_data, dict) else ''
+                if 'duplicate rule_index' not in message:
+                    raise
+                policy['rule_index'] += 1
+
+        raise AiounifiException(
+            f"Could not find a free NAT policy rule_index after {max_attempts} attempts")
 
     def _remove_nat66_policy(self, controller, loop, subnet_id, nat_policies):
         """Delete subnet_id's NAT66 policy if one exists (subnet is untagged).

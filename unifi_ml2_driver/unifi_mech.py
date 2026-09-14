@@ -196,10 +196,11 @@ class UnifiMechDriver(api.MechanismDriver):
                     # Create VLAN in UniFi controller
                     vlan_data = TypedNetwork({
                         "_id": network_id,
-                        "site_id": "default", 
+                        "site_id": "default",
                         "name": f"OpenStack-{network_id}-VLAN{segmentation_id}",
                         "purpose": "corporate",
                         "vlan": segmentation_id,
+                        "vlan_enabled": True,
                         "enabled": True
                     })
                     
@@ -291,10 +292,11 @@ class UnifiMechDriver(api.MechanismDriver):
                 # Create new network with updated VLAN ID
                 vlan_data = TypedNetwork({
                     "_id": network_id,
-                    "site_id": "default", 
+                    "site_id": "default",
                     "name": f"OpenStack-{network_id}-VLAN{new_segmentation_id}",
                     "purpose": "corporate",
                     "vlan": new_segmentation_id,
+                    "vlan_enabled": True,
                     "enabled": True
                 })
                 

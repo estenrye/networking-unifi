@@ -52,6 +52,36 @@ class FakeNetwork:
         self.vlan = vlan
 
 
+class TestGetControllerRealConfig(unittest.TestCase):
+    """Regression test for `_get_controller`'s config-option bug.
+
+    Deliberately does not use TestUnifiMechDriver's setUp, which
+    replaces `cfg.CONF` with a MagicMock -- every call through it
+    (register_group, register_opts, set_override, ...) just records a
+    call and returns another MagicMock, so it never actually exercises
+    real oslo_config option registration/lookup. That's why the bug
+    this test targets was never caught: `_get_controller` checked
+    `CONF.unifi.controller`, an option `config.py` never registers (it
+    only registers `host`, `port`, `apikey`, `username`, `password`,
+    `site`, etc.), so every real call raised `NoSuchOptError`
+    unconditionally in production while every existing test silently
+    sailed past it.
+    """
+
+    def setUp(self):
+        cfg.CONF.set_override('host', '10.0.0.1', group='unifi')
+
+    def tearDown(self):
+        cfg.CONF.clear_override('host', group='unifi')
+
+    def test_get_controller_does_not_raise_no_such_opt_error(self):
+        driver = unifi_mech.UnifiMechDriver()
+        # Must not raise oslo_config.cfg.NoSuchOptError -- calling
+        # _get_controller() alone (without entering the context manager
+        # it returns) is enough to trigger the buggy membership check.
+        driver._get_controller()
+
+
 class TestUnifiMechDriver(unittest.TestCase):
     """Test cases for UniFi ML2 mechanism driver."""
 

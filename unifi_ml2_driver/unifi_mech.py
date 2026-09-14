@@ -106,10 +106,10 @@ class UnifiMechDriver(api.MechanismDriver):
         Returns:
             A context manager that yields a controller client
         """
-        if CONF.unifi.controller not in self._controllers:
+        if CONF.unifi.host not in self._controllers:
             # Empty dict for config since we're using CONF directly in get_unifi_api
             self._controllers[CONF.unifi.host] = {}
-        
+
         return self._get_api(CONF.unifi.host)
 
     @contextmanager

@@ -639,9 +639,16 @@ class UnifiMechDriver(api.MechanismDriver):
             if network_id in zone.network_ids:
                 return
 
-            updated_zone = dict(zone.raw)
-            updated_zone.pop('attr_no_edit', None)
-            updated_zone['network_ids'] = list(zone.network_ids) + [network_id]
+            # The zone PUT endpoint rejects any field beyond _id/name/
+            # network_ids as "unrecognized" (confirmed live) -- every
+            # other field GET returns (attr_no_edit, cloud_template,
+            # default_zone, external_id, zone_key, ...) is read-only and
+            # must be omitted entirely, not just filtered individually.
+            updated_zone = {
+                '_id': zone.id,
+                'name': zone.name,
+                'network_ids': list(zone.network_ids) + [network_id],
+            }
 
             loop.run_until_complete(
                 controller.request(FirewallZoneUpdateRequest.create(TypedFirewallZone(updated_zone)))
@@ -677,9 +684,14 @@ class UnifiMechDriver(api.MechanismDriver):
             if not zone or network_id not in zone.network_ids:
                 return
 
-            updated_zone = dict(zone.raw)
-            updated_zone.pop('attr_no_edit', None)
-            updated_zone['network_ids'] = [nid for nid in zone.network_ids if nid != network_id]
+            # See _assign_network_to_default_zone: only _id/name/network_ids
+            # are accepted on write, everything else GET returns is
+            # read-only and must be omitted entirely.
+            updated_zone = {
+                '_id': zone.id,
+                'name': zone.name,
+                'network_ids': [nid for nid in zone.network_ids if nid != network_id],
+            }
 
             loop.run_until_complete(
                 controller.request(FirewallZoneUpdateRequest.create(TypedFirewallZone(updated_zone)))

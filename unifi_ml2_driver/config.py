@@ -72,7 +72,21 @@ unifi_opts = [
     # Feature flags
     cfg.BoolOpt('sync_startup',
                 default=True,
-                help='Sync networks and ports on startup'),
+                help='Sync networks and ports on startup, and periodically '
+                     'thereafter (see sync_interval). Also the sole gate for '
+                     'the periodic reconciliation loop -- running it '
+                     'periodically without an initial pass at startup '
+                     'doesn\'t make sense.'),
+    cfg.IntOpt('sync_interval',
+               default=300,
+               help='Seconds between periodic reconciliation passes. Only '
+                    'meaningful when sync_startup is true.'),
+    cfg.StrOpt('nat66_tag',
+               default='nat66=true',
+               help='Tag that marks an IPv6 subnet for NAT66 masquerade. '
+                    'Currently detected and logged during reconciliation '
+                    'only -- rule creation is not yet implemented (no '
+                    'known UniFi API for it; see the driver README).'),
     cfg.BoolOpt('use_all_networks_for_trunk',
                 default=True,
                 help='Use "All Networks" option for trunk ports'),

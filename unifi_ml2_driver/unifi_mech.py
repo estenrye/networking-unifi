@@ -22,6 +22,7 @@ managed through a UniFi Network controller.
 import asyncio
 from contextlib import contextmanager
 import ipaddress
+import re
 import threading
 import time
 
@@ -29,11 +30,14 @@ from neutron.db import provisioning_blocks
 from neutron_lib.api.definitions import dns as dns_apidef
 from neutron_lib.api.definitions import portbindings
 from neutron_lib import constants as n_const
+from neutron_lib import context as n_context
 from neutron_lib.callbacks import resources, events
 from neutron_lib.plugins.ml2 import api
 from neutron_lib.plugins import directory
+from neutron_lib.plugins import constants as plugin_constants
 from oslo_config import cfg
 from oslo_log import log as logging
+from oslo_service import loopingcall
 
 from unifi_ml2_driver import exceptions
 from unifi_ml2_driver.dns_handler import UnifiDnsHandler
@@ -54,6 +58,9 @@ class UnifiMechDriver(api.MechanismDriver):
     through a UniFi Network controller.
     """
 
+    _ORPHAN_NETWORK_NAME_RE = re.compile(
+        r'^OpenStack-(?P<netid>[0-9a-f-]{36})-VLAN(?P<vlan>\d+)$')
+
     def __init__(self):
         self.controller = None
         self.switches = {}
@@ -62,6 +69,7 @@ class UnifiMechDriver(api.MechanismDriver):
                             portbindings.CONNECTIVITY_L2}
         self.trunk_driver = None
         self._controllers = {}
+        self._sync_loop = None
         self.dns_handler = UnifiDnsHandler(self)
 
     @property
@@ -94,13 +102,36 @@ class UnifiMechDriver(api.MechanismDriver):
             with self._get_controller() as controller:
                 LOG.info("Successfully connected to UniFi controller at %s",
                          CONF.unifi.host)
-                
-                # Sync networks if needed
-                if CONF.unifi.sync_startup:
-                    self._sync_networks()
         except Exception as e:
             LOG.error("Failed to connect to UniFi controller: %s", e)
             # Don't raise - let the driver remain initialized but inactive
+            return
+
+        # Reconcile Neutron's VLAN networks/subnets with UniFi on startup,
+        # then periodically thereafter. This is the only way the driver
+        # ever observes some kinds of drift -- notably, Neutron's tag API
+        # never invokes any ML2 mechanism-driver hook at all, so a tag
+        # change (e.g. marking a subnet for the not-yet-implemented NAT66
+        # masquerade feature) is silent from this driver's perspective
+        # except here. sync_startup gates the whole reconciliation system.
+        #
+        # Deliberately NOT calling self._sync_networks() synchronously
+        # here first: this whole method runs from inside
+        # Ml2Plugin.__init__ (mechanism_manager.initialize() is called
+        # partway through it), and neutron/manager.py registers the core
+        # plugin in the directory (directory.add_plugin(CORE, plugin))
+        # only *after* that __init__ call returns -- confirmed by reading
+        # both files directly. directory.get_plugin(CORE) is therefore
+        # guaranteed to return None if called synchronously from here, so
+        # a startup-time call to _sync_networks() would always silently
+        # no-op. Instead, the loop's own first tick (short initial_delay)
+        # serves as "the startup sync" -- by the time it actually fires,
+        # __init__ has long since returned and the plugin is registered.
+        if CONF.unifi.sync_startup:
+            self._sync_loop = loopingcall.FixedIntervalLoopingCall(
+                self._sync_networks)
+            self._sync_loop.start(interval=CONF.unifi.sync_interval,
+                                  initial_delay=10)
 
     def _get_controller(self):
         """Get or create a UniFi controller connection.
@@ -138,13 +169,129 @@ class UnifiMechDriver(api.MechanismDriver):
             loop.close()
 
     def _sync_networks(self):
-        """Sync networks from OpenStack to UniFi controller."""
-        LOG.info("Syncing networks to UniFi controller")
-        # Implementation would require access to the Neutron DB
-        # Skipped for this example, but would involve:
-        # 1. Getting all networks with segmentation_id (VLAN ID)
-        # 2. Ensuring those VLANs exist in the UniFi controller
-        pass
+        """Reconcile Neutron's VLAN networks/subnets with the UniFi controller.
+
+        Called periodically (if CONF.unifi.sync_startup) via the
+        FixedIntervalLoopingCall started in initialize(), including a
+        first call shortly after startup that serves as the "sync on
+        startup" pass -- see initialize()'s comment for why that first
+        call can't happen synchronously during driver initialization
+        itself. Idempotent and best-effort throughout: a single bad
+        resource or a transient UniFi/Neutron API error must never abort
+        the whole pass or crash the loop -- the next cycle simply retries.
+        """
+        LOG.debug("Sync: starting reconciliation pass")
+        # Everything below is inside one try/except on purpose: this method
+        # is called directly from a FixedIntervalLoopingCall, which stops
+        # the loop entirely if the callable it wraps ever raises -- so an
+        # uncaught exception here wouldn't just skip one cycle, it would
+        # silently disable all future reconciliation for the life of the
+        # process. Nothing after this point may propagate out of this
+        # method, including plugin/context setup, not just the per-resource
+        # work below (which has its own finer-grained try/except so one bad
+        # network or subnet doesn't even take down the rest of its cycle).
+        try:
+            plugin = directory.get_plugin(plugin_constants.CORE)
+            ctx = n_context.get_admin_context()
+
+            try:
+                networks = plugin.get_networks(ctx)
+            except Exception as e:
+                LOG.error('Sync: failed to list Neutron networks, skipping '
+                         'this reconciliation cycle: %s', e)
+                return
+
+            vlan_networks = [
+                n for n in networks
+                if n.get('provider:network_type') == 'vlan' and not n.get('router:external')
+            ]
+            # Only from a *successful* listing above -- an empty/partial set
+            # from a failed listing would otherwise make every UniFi network
+            # look orphaned to _cleanup_orphaned_networks.
+            known_network_ids = {n['id'] for n in vlan_networks}
+
+            with self._get_controller() as controller:
+                loop = asyncio.get_event_loop()
+                loop.run_until_complete(controller.networks.update())
+                loop.run_until_complete(controller.firewall_zones.update())
+
+                for network in vlan_networks:
+                    segmentation_id = network.get('provider:segmentation_id')
+                    if not segmentation_id:
+                        continue
+
+                    network_id = network['id']
+                    try:
+                        self._reconcile_network(controller, loop, network, refresh=False)
+                    except Exception as e:
+                        LOG.error('Sync: failed to reconcile network %s (VLAN %s): %s',
+                                 network_id, segmentation_id, e)
+                        continue
+
+                    try:
+                        subnets = plugin.get_subnets(
+                            ctx, filters={'network_id': [network_id]})
+                    except Exception as e:
+                        LOG.error('Sync: failed to list subnets for network %s: %s',
+                                 network_id, e)
+                        continue
+
+                    for subnet in subnets:
+                        subnet_id = subnet['id']
+                        try:
+                            self._reconcile_subnet(
+                                controller, loop, subnet, network, refresh=False)
+                        except Exception as e:
+                            LOG.error('Sync: failed to reconcile subnet %s: %s',
+                                     subnet_id, e)
+                            continue
+
+                        if (subnet.get('ip_version') == 6
+                                and CONF.unifi.nat66_tag in (subnet.get('tags') or [])):
+                            LOG.info('Subnet %s tagged for NAT66 masquerade '
+                                    '(rule creation not yet implemented)', subnet_id)
+
+                self._cleanup_orphaned_networks(controller, loop, known_network_ids)
+
+        except Exception as e:
+            LOG.error('Sync: reconciliation pass failed: %s', e)
+
+    def _cleanup_orphaned_networks(self, controller, loop, known_network_ids):
+        """Delete UniFi networks this driver created whose Neutron network is gone.
+
+        Only ever touches UniFi networks whose name matches this driver's
+        own naming convention (OpenStack-<uuid>-VLAN<id>, see
+        _ORPHAN_NETWORK_NAME_RE) -- that's the safety boundary that keeps
+        this from ever considering a manually created UniFi network for
+        deletion. known_network_ids must come from a successful Neutron
+        network listing in the same reconciliation pass; see the caller.
+
+        Args:
+            controller: An active UniFi controller client
+            loop: The asyncio event loop to run requests on
+            known_network_ids: Set of Neutron network ids currently known
+                to exist (VLAN, non-external)
+        """
+        for _, unifi_network in list(controller.networks.items()):
+            match = self._ORPHAN_NETWORK_NAME_RE.match(unifi_network.name)
+            if not match:
+                continue
+
+            network_id = match.group('netid')
+            if network_id in known_network_ids:
+                continue
+
+            try:
+                self._unassign_network_from_default_zone(controller, loop, unifi_network.id)
+                loop.run_until_complete(
+                    controller.request(NetworkDeleteRequest.create(unifi_network.id))
+                )
+                LOG.info('Sync: deleted orphaned UniFi network %s (%r) -- no '
+                        'matching Neutron network %s', unifi_network.id,
+                        unifi_network.name, network_id)
+            except Exception as e:
+                LOG.error('Sync: failed to delete orphaned UniFi network %s (%r): %s',
+                         unifi_network.id, unifi_network.name, e)
 
     def create_network_precommit(self, context):
         """Allocate resources for a new network.
@@ -186,44 +333,7 @@ class UnifiMechDriver(api.MechanismDriver):
         try:
             with self._get_controller() as controller:
                 loop = asyncio.get_event_loop()
-                
-                # Check if network exists
-                loop.run_until_complete(controller.networks.update())
-                networks = controller.networks.items()
-                network_exists = any(
-                    net.vlan == segmentation_id for k, net in networks if hasattr(net, 'vlan')
-                )
-                
-                if not network_exists:
-                    # Create VLAN in UniFi controller
-                    vlan_data = TypedNetwork({
-                        "_id": network_id,
-                        "site_id": "default",
-                        "name": f"OpenStack-{network_id}-VLAN{segmentation_id}",
-                        "purpose": "corporate",
-                        "vlan": segmentation_id,
-                        "vlan_enabled": True,
-                        "enabled": True
-                    })
-                    
-                    loop.run_until_complete(
-                        controller.request(NetworkCreateRequest.create(Network(vlan_data)))
-                    )
-                    
-                    LOG.info('Network %s (VLAN %s) has been created in UniFi controller',
-                             network_id, segmentation_id)
-                else:
-                    LOG.debug('Network %s (VLAN %s) already exists in UniFi controller',
-                             network_id, segmentation_id)
-
-                # UniFi assigns its own _id on create (typically a Mongo
-                # ObjectId), ignoring whatever "_id" was requested above --
-                # zone membership has to reference that real id, not the
-                # Neutron network_id.
-                unifi_network = self._unifi_network_for_vlan(controller, loop, segmentation_id)
-                if unifi_network:
-                    self._assign_network_to_default_zone(controller, loop, unifi_network.id)
-
+                self._reconcile_network(controller, loop, network)
         except Exception as e:
             LOG.error('Failed to create network %s (VLAN %s) in UniFi controller: %s',
                      network_id, segmentation_id, e)
@@ -284,46 +394,31 @@ class UnifiMechDriver(api.MechanismDriver):
         try:
             with self._get_controller() as controller:
                 loop = asyncio.get_event_loop()
-                
-                # Find the network with the old VLAN ID
-                networks = controller.networks.items()
-                old_network = next(
-                    (net for k, net in networks 
-                     if hasattr(net, 'vlan') and net.vlan == old_segmentation_id), 
-                    None
-                )
-                
+
+                # Find the network with the old VLAN ID. NOTE: this now
+                # goes through _unifi_network_for_vlan (default
+                # refresh=True) instead of reading controller.networks.items()
+                # directly without ever calling .update() first, as this
+                # code previously did -- on the fresh connection
+                # _get_controller() opens per hook invocation, that meant
+                # the cache was always empty here, so old_network was
+                # always None and the delete-old-network branch below
+                # never actually ran. Using the shared helper fixes that
+                # as a side effect of the refactor.
+                old_network = self._unifi_network_for_vlan(controller, loop, old_segmentation_id)
                 if old_network:
                     # Delete old network
                     loop.run_until_complete(
                         controller.request(NetworkDeleteRequest.create(old_network.id))
                     )
-                
-                # Create new network with updated VLAN ID
-                vlan_data = TypedNetwork({
-                    "_id": network_id,
-                    "site_id": "default",
-                    "name": f"OpenStack-{network_id}-VLAN{new_segmentation_id}",
-                    "purpose": "corporate",
-                    "vlan": new_segmentation_id,
-                    "vlan_enabled": True,
-                    "enabled": True
-                })
-                
-                loop.run_until_complete(
-                    controller.request(NetworkCreateRequest.create(Network(vlan_data)))
-                )
-                
+
+                # Create the network fresh under the new VLAN ID (and
+                # assign it to the default firewall zone, same as any
+                # other create).
+                self._reconcile_network(controller, loop, network)
+
                 LOG.info('Network %s updated from VLAN %s to VLAN %s in UniFi controller',
                          network_id, old_segmentation_id, new_segmentation_id)
-
-                # UniFi assigns its own _id on create (typically a Mongo
-                # ObjectId), ignoring whatever "_id" was requested above --
-                # zone membership has to reference that real id, not the
-                # Neutron network_id.
-                unifi_network = self._unifi_network_for_vlan(controller, loop, new_segmentation_id)
-                if unifi_network:
-                    self._assign_network_to_default_zone(controller, loop, unifi_network.id)
 
         except Exception as e:
             LOG.error('Failed to update network %s from VLAN %s to VLAN %s: %s',
@@ -443,23 +538,7 @@ class UnifiMechDriver(api.MechanismDriver):
         try:
             with self._get_controller() as controller:
                 loop = asyncio.get_event_loop()
-
-                unifi_network = self._unifi_network_for_vlan(controller, loop, segmentation_id)
-                if not unifi_network:
-                    LOG.warning('Cannot sync subnet %s: no UniFi network found for VLAN %s',
-                               subnet_id, segmentation_id)
-                    return
-
-                update_data = dict(unifi_network.raw)
-                update_data.update(self._subnet_unifi_fields(subnet))
-
-                loop.run_until_complete(
-                    controller.request(NetworkUpdateRequest.create(Network(TypedNetwork(update_data))))
-                )
-
-                LOG.info('Subnet %s has been synced to UniFi network %s (VLAN %s)',
-                         subnet_id, unifi_network.id, segmentation_id)
-
+                self._reconcile_subnet(controller, loop, subnet, network)
         except Exception as e:
             LOG.error('Failed to sync subnet %s (VLAN %s) to UniFi controller: %s',
                      subnet_id, segmentation_id, e)
@@ -516,23 +595,7 @@ class UnifiMechDriver(api.MechanismDriver):
         try:
             with self._get_controller() as controller:
                 loop = asyncio.get_event_loop()
-
-                unifi_network = self._unifi_network_for_vlan(controller, loop, segmentation_id)
-                if not unifi_network:
-                    LOG.warning('Cannot sync subnet %s: no UniFi network found for VLAN %s',
-                               subnet_id, segmentation_id)
-                    return
-
-                update_data = dict(unifi_network.raw)
-                update_data.update(self._subnet_unifi_fields(subnet))
-
-                loop.run_until_complete(
-                    controller.request(NetworkUpdateRequest.create(Network(TypedNetwork(update_data))))
-                )
-
-                LOG.info('Subnet %s has been re-synced to UniFi network %s (VLAN %s)',
-                         subnet_id, unifi_network.id, segmentation_id)
-
+                self._reconcile_subnet(controller, loop, subnet, network)
         except Exception as e:
             LOG.error('Failed to sync subnet %s (VLAN %s) to UniFi controller: %s',
                      subnet_id, segmentation_id, e)
@@ -701,18 +764,25 @@ class UnifiMechDriver(api.MechanismDriver):
             LOG.error('Failed to remove network %s from firewall zone %s: %s',
                      network_id, zone_name, e)
 
-    def _unifi_network_for_vlan(self, controller, loop, segmentation_id):
+    def _unifi_network_for_vlan(self, controller, loop, segmentation_id, refresh=True):
         """Find the UniFi network config matching a Neutron VLAN segment.
 
         Args:
             controller: An active UniFi controller client
             loop: The asyncio event loop to run requests on
             segmentation_id: The Neutron VLAN segmentation ID
+            refresh: Whether to call controller.networks.update() first.
+                The bulk reconciliation pass in _sync_networks refreshes
+                the cache once up front for the whole pass and passes
+                refresh=False here to avoid a redundant full-list fetch
+                per network; every single-event postcommit hook keeps the
+                original refresh=True behavior.
 
         Returns:
             The matching aiounifi Network, or None if not found
         """
-        loop.run_until_complete(controller.networks.update())
+        if refresh:
+            loop.run_until_complete(controller.networks.update())
         return next(
             (net for _, net in controller.networks.items()
              if hasattr(net, 'vlan') and net.vlan == segmentation_id),
@@ -791,6 +861,109 @@ class UnifiMechDriver(api.MechanismDriver):
             'dhcpd_gateway_enabled': False,
             'dhcpd_dns_enabled': False,
         }
+
+    def _reconcile_network(self, controller, loop, network, refresh=True):
+        """Ensure a UniFi network exists and is correctly named for this VLAN.
+
+        Shared by create_network_postcommit/update_network_postcommit
+        (single-event, each wraps this in their own try/except/raise) and
+        _sync_networks (bulk periodic pass, catches and continues past a
+        single network's failure instead). Only fixes presence and a
+        drifted name -- other fields (e.g. purpose) are left alone even if
+        changed manually in the UniFi UI, since correcting every field on
+        every cycle risks fighting an intentional human change.
+
+        Args:
+            controller: An active UniFi controller client
+            loop: The asyncio event loop to run requests on
+            network: The Neutron network dict
+            refresh: Passed through to the initial existence check (see
+                _unifi_network_for_vlan) -- a post-write lookup always
+                refreshes regardless, since the cache is stale the moment
+                this function writes anything.
+        """
+        network_id = network['id']
+        segmentation_id = network['provider:segmentation_id']
+        expected_name = f"OpenStack-{network_id}-VLAN{segmentation_id}"
+
+        unifi_network = self._unifi_network_for_vlan(
+            controller, loop, segmentation_id, refresh=refresh)
+        wrote = False
+
+        if not unifi_network:
+            vlan_data = TypedNetwork({
+                "_id": network_id,
+                "site_id": "default",
+                "name": expected_name,
+                "purpose": "corporate",
+                "vlan": segmentation_id,
+                "vlan_enabled": True,
+                "enabled": True
+            })
+            loop.run_until_complete(
+                controller.request(NetworkCreateRequest.create(Network(vlan_data)))
+            )
+            LOG.info('Network %s (VLAN %s) has been created in UniFi controller',
+                     network_id, segmentation_id)
+            wrote = True
+        elif unifi_network.name != expected_name:
+            updated = dict(unifi_network.raw)
+            updated['name'] = expected_name
+            loop.run_until_complete(
+                controller.request(NetworkUpdateRequest.create(Network(TypedNetwork(updated))))
+            )
+            LOG.info('Corrected drifted name for UniFi network %s (VLAN %s): %r -> %r',
+                     unifi_network.id, segmentation_id, unifi_network.name, expected_name)
+            wrote = True
+        else:
+            LOG.debug('Network %s (VLAN %s) already exists in UniFi controller',
+                     network_id, segmentation_id)
+
+        if wrote:
+            # A write just happened -- the cache is stale regardless of
+            # what `refresh` said, and we need the authoritative
+            # post-write object (in particular its real _id if this was
+            # a create; see the module-level note on UniFi assigning its
+            # own _id).
+            unifi_network = self._unifi_network_for_vlan(
+                controller, loop, segmentation_id, refresh=True)
+
+        if unifi_network:
+            self._assign_network_to_default_zone(controller, loop, unifi_network.id)
+
+    def _reconcile_subnet(self, controller, loop, subnet, network, refresh=True):
+        """Ensure a UniFi network's subnet/DHCP fields match this Neutron subnet.
+
+        Shared by create_subnet_postcommit/update_subnet_postcommit
+        (single-event) and _sync_networks (bulk periodic pass). Callers
+        are responsible for the vlan/external network filter and their
+        own error handling (raise vs. log-and-continue).
+
+        Args:
+            controller: An active UniFi controller client
+            loop: The asyncio event loop to run requests on
+            subnet: The Neutron subnet dict
+            network: The Neutron network dict the subnet belongs to
+        """
+        segmentation_id = network['provider:segmentation_id']
+        subnet_id = subnet['id']
+
+        unifi_network = self._unifi_network_for_vlan(
+            controller, loop, segmentation_id, refresh=refresh)
+        if not unifi_network:
+            LOG.warning('Cannot sync subnet %s: no UniFi network found for VLAN %s',
+                       subnet_id, segmentation_id)
+            return
+
+        update_data = dict(unifi_network.raw)
+        update_data.update(self._subnet_unifi_fields(subnet))
+
+        loop.run_until_complete(
+            controller.request(NetworkUpdateRequest.create(Network(TypedNetwork(update_data))))
+        )
+
+        LOG.info('Subnet %s has been synced to UniFi network %s (VLAN %s)',
+                 subnet_id, unifi_network.id, segmentation_id)
 
     def create_port_precommit(self, context):
         """Allocate resources for a new port.

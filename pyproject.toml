@@ -1,12 +1,12 @@
 [project]
-name = "unifi-ml2-driver"
+name = "unifi-ml2-driver-estenrye"
 dynamic = [ "version" ]
-urls = { repository = "https://github.com/ubiquiti-community/unifi-ml2-driver", documentation = "https://github.com/ubiquiti-community/unifi-ml2-driver/tree/main/doc/source" }
-description = "Unifi Modular Layer 2 (ML2) driver."
-authors = [{ name = "appkins", email = "info@appkins.io" }]
+urls = { repository = "https://github.com/estenrye/networking-unifi", documentation = "https://github.com/estenrye/networking-unifi/tree/main/doc/source", upstream = "https://github.com/ubiquiti-community/networking-unifi" }
+description = "Unifi Modular Layer 2 (ML2) driver -- estenrye fork: fixes the _get_controller NoSuchOptError bug (see ubiquiti-community/networking-unifi#17) and relaxes requires-python back to >=3.10.12, matching what the code actually needs (verified against a real Python 3.10.12 + neutron/oslo_config environment) rather than upstream's >=3.12.0 policy bump. Same import name (unifi_ml2_driver) and entry point (unifi) as upstream -- only the distribution name differs, so this is a drop-in pip replacement."
+authors = [{ name = "appkins", email = "info@appkins.io" }, { name = "Esten Rye", email = "esten.rye@ryezone.com" }]
 license-files = ["LICENSE"]
 readme = "README.md"
-requires-python = ">=3.12.0"
+requires-python = ">=3.10.12"
 dependencies = [
     "aiohttp-unifi (>=88)",
     "etcd3gw (>=2.1.0)",
@@ -30,7 +30,7 @@ unifi = "unifi_ml2_driver.unifi_mech:UnifiMechDriver"
 version = "1.0.6"
 packages = [{ include = "unifi_ml2_driver" }]
 # scripts = { unifi-ml2-driver = "unifi_ml2_driver.cli:main" }
-dependencies = { python = ">=3.12.0,<4.0" }
+dependencies = { python = ">=3.10.12,<4.0" }
 
 [tool.poetry.group.dev.dependencies]
 # Test tools

@@ -93,8 +93,19 @@ class UnifiMechDriver(api.MechanismDriver):
             LOG.warning("UniFi controller URL not configured. Driver disabled.")
             return
 
-        if not CONF.unifi.username or not CONF.unifi.password:
-            LOG.warning("UniFi credentials not configured. Driver disabled.")
+        # apikey and username/password are alternative auth methods (see
+        # CONF.unifi.apikey's help text: "If set, username and password
+        # are ignored") -- this previously only ever checked for
+        # username/password, so it always warned "disabled" and returned
+        # early on an apikey-only config (this exact cluster's config,
+        # confirmed live) without actually disabling anything: every
+        # postcommit hook calls _get_controller() independently of
+        # initialize() and worked fine regardless. The one real
+        # consequence was that the sync_startup reconciliation loop below
+        # could never start, since this return happens before reaching it.
+        if not CONF.unifi.apikey and not (CONF.unifi.username and CONF.unifi.password):
+            LOG.warning("UniFi credentials not configured (no apikey or "
+                       "username/password). Driver disabled.")
             return
 
         # Test connection to controller

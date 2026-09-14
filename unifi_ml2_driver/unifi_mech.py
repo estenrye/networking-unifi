@@ -21,6 +21,7 @@ managed through a UniFi Network controller.
 
 import asyncio
 from contextlib import contextmanager
+import ipaddress
 import threading
 import time
 
@@ -37,7 +38,7 @@ from oslo_log import log as logging
 from unifi_ml2_driver import exceptions
 from unifi_ml2_driver.dns_handler import UnifiDnsHandler
 from unifi_ml2_driver.unifi_api import get_unifi_api
-from aiounifi.models.network import NetworkCreateRequest, NetworkDeleteRequest, Network, TypedNetwork
+from aiounifi.models.network import NetworkCreateRequest, NetworkDeleteRequest, NetworkUpdateRequest, Network, TypedNetwork
 from aiounifi.models.device import Device, DeviceListRequest, TypedDevicePortOverrides, DeviceSetPortProfileRequest
 from unifi_ml2_driver import trunk_driver
 
@@ -388,14 +389,12 @@ class UnifiMechDriver(api.MechanismDriver):
         :param context: SubnetContext instance describing the new
             subnet.
 
-        rt = context.current
-        device_id = port['device_id']
-        device_owner = port['device_owner']
         Create a new subnet, allocating resources as necessary in the
         database. Called inside transaction context on session. Call
         cannot block.  Raising an exception will result in a rollback
         of the current transaction.
         """
+        # Nothing to do for subnet precommit
         pass
 
     def create_subnet_postcommit(self, context):
@@ -409,7 +408,43 @@ class UnifiMechDriver(api.MechanismDriver):
         drastically affect performance. Raising an exception will
         cause the deletion of the resource.
         """
-        pass
+        subnet = context.current
+        network = context.network.current
+
+        # Only handle networks with segmentation ID (VLANs)
+        if network.get('provider:network_type') != 'vlan' or network.get('router:external'):
+            return
+
+        segmentation_id = network.get('provider:segmentation_id')
+        if not segmentation_id:
+            return
+
+        subnet_id = subnet['id']
+
+        try:
+            with self._get_controller() as controller:
+                loop = asyncio.get_event_loop()
+
+                unifi_network = self._unifi_network_for_vlan(controller, loop, segmentation_id)
+                if not unifi_network:
+                    LOG.warning('Cannot sync subnet %s: no UniFi network found for VLAN %s',
+                               subnet_id, segmentation_id)
+                    return
+
+                update_data = dict(unifi_network.raw)
+                update_data.update(self._subnet_unifi_fields(subnet))
+
+                loop.run_until_complete(
+                    controller.request(NetworkUpdateRequest.create(Network(TypedNetwork(update_data))))
+                )
+
+                LOG.info('Subnet %s has been synced to UniFi network %s (VLAN %s)',
+                         subnet_id, unifi_network.id, segmentation_id)
+
+        except Exception as e:
+            LOG.error('Failed to sync subnet %s (VLAN %s) to UniFi controller: %s',
+                     subnet_id, segmentation_id, e)
+            raise
 
     def update_subnet_precommit(self, context):
         """Update resources of a subnet.
@@ -427,6 +462,7 @@ class UnifiMechDriver(api.MechanismDriver):
         subnet state. It is up to the mechanism driver to ignore
         state or state changes that it does not know or care about.
         """
+        # Nothing to do for subnet update precommit
         pass
 
     def update_subnet_postcommit(self, context):
@@ -445,7 +481,43 @@ class UnifiMechDriver(api.MechanismDriver):
         subnet state.  It is up to the mechanism driver to ignore
         state or state changes that it does not know or care about.
         """
-        pass
+        subnet = context.current
+        network = context.network.current
+
+        # Only handle networks with segmentation ID (VLANs)
+        if network.get('provider:network_type') != 'vlan' or network.get('router:external'):
+            return
+
+        segmentation_id = network.get('provider:segmentation_id')
+        if not segmentation_id:
+            return
+
+        subnet_id = subnet['id']
+
+        try:
+            with self._get_controller() as controller:
+                loop = asyncio.get_event_loop()
+
+                unifi_network = self._unifi_network_for_vlan(controller, loop, segmentation_id)
+                if not unifi_network:
+                    LOG.warning('Cannot sync subnet %s: no UniFi network found for VLAN %s',
+                               subnet_id, segmentation_id)
+                    return
+
+                update_data = dict(unifi_network.raw)
+                update_data.update(self._subnet_unifi_fields(subnet))
+
+                loop.run_until_complete(
+                    controller.request(NetworkUpdateRequest.create(Network(TypedNetwork(update_data))))
+                )
+
+                LOG.info('Subnet %s has been re-synced to UniFi network %s (VLAN %s)',
+                         subnet_id, unifi_network.id, segmentation_id)
+
+        except Exception as e:
+            LOG.error('Failed to sync subnet %s (VLAN %s) to UniFi controller: %s',
+                     subnet_id, segmentation_id, e)
+            raise
 
     def delete_subnet_precommit(self, context):
         """Delete resources for a subnet.
@@ -459,6 +531,7 @@ class UnifiMechDriver(api.MechanismDriver):
         raising an exception will result in rollback of the
         transaction.
         """
+        # Nothing to do for subnet delete precommit
         pass
 
     def delete_subnet_postcommit(self, context):
@@ -473,7 +546,134 @@ class UnifiMechDriver(api.MechanismDriver):
         expected, and will not prevent the resource from being
         deleted.
         """
-        pass
+        subnet = context.current
+        network = context.network.current
+
+        # Only handle networks with segmentation ID (VLANs)
+        if network.get('provider:network_type') != 'vlan' or network.get('router:external'):
+            return
+
+        segmentation_id = network.get('provider:segmentation_id')
+        if not segmentation_id:
+            return
+
+        subnet_id = subnet['id']
+
+        try:
+            with self._get_controller() as controller:
+                loop = asyncio.get_event_loop()
+
+                unifi_network = self._unifi_network_for_vlan(controller, loop, segmentation_id)
+                if not unifi_network:
+                    LOG.debug('Subnet %s: no UniFi network found for VLAN %s, nothing to clear',
+                             subnet_id, segmentation_id)
+                    return
+
+                update_data = dict(unifi_network.raw)
+                update_data.update(self._subnet_clear_fields(subnet))
+
+                loop.run_until_complete(
+                    controller.request(NetworkUpdateRequest.create(Network(TypedNetwork(update_data))))
+                )
+
+                LOG.info('Subnet %s has been cleared from UniFi network %s (VLAN %s)',
+                         subnet_id, unifi_network.id, segmentation_id)
+
+        except Exception as e:
+            # Log but don't raise to prevent subnet deletion from failing
+            LOG.error('Failed to clear subnet %s (VLAN %s) from UniFi controller: %s',
+                     subnet_id, segmentation_id, e)
+
+    def _unifi_network_for_vlan(self, controller, loop, segmentation_id):
+        """Find the UniFi network config matching a Neutron VLAN segment.
+
+        Args:
+            controller: An active UniFi controller client
+            loop: The asyncio event loop to run requests on
+            segmentation_id: The Neutron VLAN segmentation ID
+
+        Returns:
+            The matching aiounifi Network, or None if not found
+        """
+        loop.run_until_complete(controller.networks.update())
+        return next(
+            (net for _, net in controller.networks.items()
+             if hasattr(net, 'vlan') and net.vlan == segmentation_id),
+            None
+        )
+
+    def _subnet_unifi_fields(self, subnet):
+        """Build the UniFi networkconf fields for a Neutron subnet.
+
+        Args:
+            subnet: The Neutron subnet dict (context.current)
+
+        Returns:
+            A dict of TypedNetwork fields to merge into the UniFi
+            network config for the subnet's IP/DHCP settings.
+        """
+        cidr = subnet.get('cidr')
+        gateway_ip = subnet.get('gateway_ip')
+        enable_dhcp = bool(subnet.get('enable_dhcp'))
+        allocation_pools = subnet.get('allocation_pools') or []
+        dns_nameservers = subnet.get('dns_nameservers') or []
+
+        fields = {}
+
+        if subnet.get('ip_version') == 6:
+            if cidr:
+                fields['ipv6_subnet'] = cidr
+
+            fields['dhcpdv6_enabled'] = enable_dhcp
+            if enable_dhcp and allocation_pools:
+                fields['dhcpdv6_start'] = allocation_pools[0]['start']
+                fields['dhcpdv6_stop'] = allocation_pools[0]['end']
+
+            fields['dhcpdv6_dns_auto'] = not dns_nameservers
+            for i, dns in enumerate(dns_nameservers[:4], start=1):
+                fields[f'dhcpdv6_dns_{i}'] = dns
+        else:
+            if cidr and gateway_ip:
+                prefixlen = ipaddress.ip_network(cidr, strict=False).prefixlen
+                fields['ip_subnet'] = f'{gateway_ip}/{prefixlen}'
+
+            fields['dhcpd_gateway_enabled'] = bool(gateway_ip)
+            if gateway_ip:
+                fields['dhcpd_gateway'] = gateway_ip
+
+            fields['dhcpd_enabled'] = enable_dhcp
+            if enable_dhcp and allocation_pools:
+                fields['dhcpd_start'] = allocation_pools[0]['start']
+                fields['dhcpd_stop'] = allocation_pools[0]['end']
+
+            fields['dhcpd_dns_enabled'] = bool(dns_nameservers)
+            for i, dns in enumerate(dns_nameservers[:4], start=1):
+                fields[f'dhcpd_dns_{i}'] = dns
+
+        return fields
+
+    def _subnet_clear_fields(self, subnet):
+        """Build UniFi networkconf fields that disable a deleted subnet's DHCP/gateway.
+
+        Leaves ip_subnet/ipv6_subnet in place rather than clearing them
+        outright, since an empty subnet field can leave the UniFi network
+        config in an invalid state; disabling DHCP and the gateway is
+        sufficient to stop it acting on the removed subnet.
+
+        Args:
+            subnet: The Neutron subnet dict (context.current)
+
+        Returns:
+            A dict of TypedNetwork fields to merge into the UniFi
+            network config.
+        """
+        if subnet.get('ip_version') == 6:
+            return {'dhcpdv6_enabled': False}
+        return {
+            'dhcpd_enabled': False,
+            'dhcpd_gateway_enabled': False,
+            'dhcpd_dns_enabled': False,
+        }
 
     def create_port_precommit(self, context):
         """Allocate resources for a new port.

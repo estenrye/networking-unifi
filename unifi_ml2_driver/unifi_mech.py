@@ -1174,8 +1174,14 @@ class UnifiMechDriver(api.MechanismDriver):
         fields = {}
 
         if subnet.get('ip_version') == 6:
-            if cidr:
+            if cidr and gateway_ip:
+                prefixlen = ipaddress.ip_network(cidr, strict=False).prefixlen
+                fields['ipv6_subnet'] = f'{gateway_ip}/{prefixlen}'
+            elif cidr:
                 fields['ipv6_subnet'] = cidr
+
+            fields['ipv6_interface_type'] = 'static' if gateway_ip else 'none'
+            fields['ipv6_ra_enabled'] = bool(gateway_ip)
 
             fields['dhcpdv6_enabled'] = enable_dhcp
             if enable_dhcp and allocation_pools:
@@ -1221,7 +1227,7 @@ class UnifiMechDriver(api.MechanismDriver):
             network config.
         """
         if subnet.get('ip_version') == 6:
-            return {'dhcpdv6_enabled': False}
+            return {'dhcpdv6_enabled': False, 'ipv6_ra_enabled': False}
         return {
             'dhcpd_enabled': False,
             'dhcpd_gateway_enabled': False,

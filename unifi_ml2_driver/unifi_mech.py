@@ -1310,6 +1310,49 @@ class UnifiMechDriver(api.MechanismDriver):
 
         if unifi_network:
             self._assign_network_to_default_zone(controller, loop, unifi_network.id)
+            self._reconcile_ipv4_disablement(controller, loop, network, unifi_network)
+
+    def _reconcile_ipv4_disablement(self, controller, loop, network, unifi_network):
+        """Disable UniFi's IPv4 DHCP/auto-scale for an IPv4-less network.
+
+        A UniFi network always provisions an IPv4 config section by
+        default, even for a Neutron network that only ever gets an IPv6
+        subnet -- left alone, that means a live, Neutron-unmanaged IPv4
+        DHCP server (and UniFi's own subnet auto-expansion feature) keeps
+        running on the segment. Best-effort: swallows its own failures
+        rather than blocking the rest of network reconciliation.
+
+        Args:
+            controller: An active UniFi controller client
+            loop: The asyncio event loop to run requests on
+            network: The Neutron network dict
+            unifi_network: The corresponding UniFi network object
+        """
+        try:
+            plugin = directory.get_plugin(plugin_constants.CORE)
+            ctx = n_context.get_admin_context()
+            subnets = plugin.get_subnets(
+                ctx, filters={'network_id': [network['id']]})
+        except Exception as e:
+            LOG.warning('Could not check subnets for network %s to reconcile '
+                       'its IPv4 DHCP/auto-scale state: %s', network['id'], e)
+            return
+
+        if any(s.get('ip_version') == 4 for s in subnets):
+            return
+
+        raw = unifi_network.raw
+        if raw.get('dhcpd_enabled') is False and raw.get('auto_scale_enabled') is False:
+            return
+
+        updated = dict(raw)
+        updated['dhcpd_enabled'] = False
+        updated['auto_scale_enabled'] = False
+        loop.run_until_complete(
+            controller.request(NetworkUpdateRequest.create(Network(TypedNetwork(updated))))
+        )
+        LOG.info('Disabled IPv4 DHCP/auto-scale for IPv6-only UniFi network %s (VLAN %s)',
+                 unifi_network.id, network.get('provider:segmentation_id'))
 
     def _reconcile_subnet(self, controller, loop, subnet, network, refresh=True):
         """Ensure a UniFi network's subnet/DHCP fields match this Neutron subnet.
@@ -1345,6 +1388,98 @@ class UnifiMechDriver(api.MechanismDriver):
         LOG.info('Subnet %s has been synced to UniFi network %s (VLAN %s)',
                  subnet_id, unifi_network.id, segmentation_id)
 
+    @staticmethod
+    def _eui64_address(mac, cidr):
+        """Compute a port's deterministic SLAAC (modified EUI-64) address.
+
+        Only meaningful for a /64 -- SLAAC's EUI-64 interface identifier
+        is only well-defined for a 64-bit prefix, and this is the exact
+        addressing scheme a client's kernel derives on its own from a
+        Router Advertisement, independent of anything Neutron does.
+
+        Args:
+            mac: The port's MAC address (colon-separated hex).
+            cidr: The subnet's CIDR (e.g. "fd97:45c2:b3a1:1000::/64").
+
+        Returns:
+            The computed address as a string, or None if cidr isn't a /64.
+        """
+        network = ipaddress.ip_network(cidr, strict=False)
+        if network.prefixlen != 64:
+            return None
+        mac_bytes = [int(b, 16) for b in mac.split(':')]
+        mac_bytes[0] ^= 0x02
+        interface_id = int.from_bytes(
+            bytes(mac_bytes[0:3] + [0xff, 0xfe] + mac_bytes[3:6]), 'big')
+        return str(ipaddress.IPv6Address(int(network.network_address) | interface_id))
+
+    def _authorize_port_slaac_addresses(self, port, network):
+        """Pre-authorize a port's inevitable SLAAC address with OVN.
+
+        The UDM-SE always runs its DHCPv6 in "ra-only" mode (confirmed by
+        reading its generated dnsmasq config directly -- true
+        DHCPv6-stateful leasing never actually happens on this platform,
+        regardless of any API field), so every IPv6-capable client on a
+        network we've made the UDM-SE the gateway for also self-assigns a
+        SLAAC address from the advertised prefix, in addition to its real
+        Neutron-assigned address. OVN's port security only authorizes a
+        port's actual fixed_ips, so traffic sourced from that SLAAC
+        address is silently dropped with no error anywhere -- fix that by
+        pre-authorizing the deterministic EUI-64 address as an
+        allowed_address_pair. Best-effort: swallows its own failures
+        rather than blocking port creation/update.
+
+        Args:
+            port: The Neutron port dict (context.current)
+            network: The Neutron network dict the port belongs to
+        """
+        if network.get('provider:network_type') != 'vlan':
+            return
+        if not network.get('provider:segmentation_id'):
+            return
+
+        mac = port.get('mac_address')
+        subnet_ids = {ip['subnet_id'] for ip in port.get('fixed_ips', [])
+                     if ip.get('subnet_id')}
+        if not mac or not subnet_ids:
+            return
+
+        try:
+            plugin = directory.get_plugin(plugin_constants.CORE)
+            ctx = n_context.get_admin_context()
+            subnets = plugin.get_subnets(ctx, filters={'id': list(subnet_ids)})
+        except Exception as e:
+            LOG.warning('Could not look up subnets for port %s to authorize '
+                       'its SLAAC address: %s', port['id'], e)
+            return
+
+        fixed_ips = {ip['ip_address'] for ip in port.get('fixed_ips', [])}
+        existing_pairs = {
+            pair['ip_address'] for pair in port.get('allowed_address_pairs', [])
+        }
+
+        new_pairs = []
+        for subnet in subnets:
+            if subnet.get('ip_version') != 6 or not subnet.get('gateway_ip'):
+                continue
+            slaac_ip = self._eui64_address(mac, subnet['cidr'])
+            if slaac_ip and slaac_ip not in existing_pairs and slaac_ip not in fixed_ips:
+                new_pairs.append({'ip_address': slaac_ip, 'mac_address': mac})
+
+        if not new_pairs:
+            return
+
+        try:
+            plugin.update_port(
+                n_context.get_admin_context(), port['id'],
+                {'port': {'allowed_address_pairs':
+                    list(port.get('allowed_address_pairs', [])) + new_pairs}})
+            LOG.info('Authorized SLAAC address(es) %s for port %s',
+                     [p['ip_address'] for p in new_pairs], port['id'])
+        except Exception as e:
+            LOG.warning('Failed to authorize SLAAC address for port %s: %s',
+                       port['id'], e)
+
     def create_port_precommit(self, context):
         """Allocate resources for a new port.
 
@@ -1375,16 +1510,22 @@ class UnifiMechDriver(api.MechanismDriver):
         # DNS records can be created regardless of physical port binding
         if dns_apidef.DNSNAME in port and port.get(dns_apidef.DNSNAME):
             self.dns_handler.create_port_dns_records(context._plugin_context, port, network)
-        
+
+        # SLAAC address authorization applies to any port on a managed VLAN
+        # network (VM ports included) -- must run before the
+        # binding:profile check below, which only concerns the
+        # baremetal/switch-port-configuration logic further down.
+        self._authorize_port_slaac_addresses(port, network)
+
         # Skip ports that don't have binding:profile
         if not port.get('binding:profile'):
             return
-            
+
         # Only process ports with local_link_information
         local_link_info = port['binding:profile'].get('local_link_information')
         if not local_link_info or not isinstance(local_link_info, list):
             return
-            
+
         # Only handle networks with segmentation ID (VLANs)
         if network.get('provider:network_type') != 'vlan':
             return
@@ -1463,6 +1604,10 @@ class UnifiMechDriver(api.MechanismDriver):
         (dns_apidef.DNSNAME in original_port and original_port.get(dns_apidef.DNSNAME)):
             self.dns_handler.update_port_dns_records(
                 context._plugin_context, port, network, original_port)
+
+        # See create_port_postcommit's identical call for why this must run
+        # before the binding:profile check below.
+        self._authorize_port_slaac_addresses(port, network)
 
         # Skip ports that don't have binding:profile
         if not port.get('binding:profile'):

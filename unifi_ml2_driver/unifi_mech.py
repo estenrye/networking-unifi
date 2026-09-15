@@ -1188,6 +1188,14 @@ class UnifiMechDriver(api.MechanismDriver):
                 fields['dhcpdv6_start'] = allocation_pools[0]['start']
                 fields['dhcpdv6_stop'] = allocation_pools[0]['end']
 
+            # Neutron's own DHCPv6-stateful subnet is the only source of
+            # truth for addresses on this network. Without this, RA-enabled
+            # clients also self-assign a SLAAC address from the advertised
+            # prefix -- one OVN's port security never authorized, so any
+            # traffic that happens to pick it as its source address gets
+            # silently dropped.
+            fields['dhcpdv6_allow_slaac'] = False
+
             fields['dhcpdv6_dns_auto'] = not dns_nameservers
             for i, dns in enumerate(dns_nameservers[:4], start=1):
                 fields[f'dhcpdv6_dns_{i}'] = dns

@@ -63,8 +63,17 @@ class UnifiMechDriver(api.MechanismDriver):
     through a UniFi Network controller.
     """
 
+    # UniFi's network name is capped at 32 characters (enforced by its web
+    # UI, though not its REST API -- confirmed live, 2026-09-16: a longer
+    # name is silently accepted on write but makes the network permanently
+    # un-editable through the UI, including reassigning its firewall zone).
+    # VLAN ids are 1-4094 (at most 4 digits), so _network_name spends
+    # whatever's left of the 32 chars on as much of the Neutron network id
+    # as fits, dash-stripped for density; this regex's netid_prefix is
+    # correspondingly a prefix, not the full id, and callers must match it
+    # against known ids with startswith (see _cleanup_orphaned_networks).
     _ORPHAN_NETWORK_NAME_RE = re.compile(
-        r'^OpenStack-(?P<netid>[0-9a-f-]{36})-VLAN(?P<vlan>\d+)$')
+        r'^OpenStack-VLAN(?P<vlan>\d{1,4})-(?P<netid_prefix>[0-9a-f]+)$')
     _NAT66_POLICY_DESCRIPTION_RE = re.compile(
         r'^OpenStack-NAT66-(?P<subnetid>[0-9a-f-]{36})$')
 
@@ -339,7 +348,7 @@ class UnifiMechDriver(api.MechanismDriver):
         """Delete UniFi networks this driver created whose Neutron network is gone.
 
         Only ever touches UniFi networks whose name matches this driver's
-        own naming convention (OpenStack-<uuid>-VLAN<id>, see
+        own naming convention (OpenStack-VLAN<id>-<netid prefix>, see
         _ORPHAN_NETWORK_NAME_RE) -- that's the safety boundary that keeps
         this from ever considering a manually created UniFi network for
         deletion. known_network_ids must come from a successful Neutron
@@ -351,13 +360,18 @@ class UnifiMechDriver(api.MechanismDriver):
             known_network_ids: Set of Neutron network ids currently known
                 to exist (VLAN, non-external)
         """
+        known_netid_prefixes = {nid.replace('-', '') for nid in known_network_ids}
+
         for _, unifi_network in list(controller.networks.items()):
             match = self._ORPHAN_NETWORK_NAME_RE.match(unifi_network.name)
             if not match:
                 continue
 
-            network_id = match.group('netid')
-            if network_id in known_network_ids:
+            # _network_name truncates the Neutron network id to fit
+            # UniFi's 32-character name limit, so this is only ever a
+            # prefix -- match accordingly, never by equality.
+            netid_prefix = match.group('netid_prefix')
+            if any(known.startswith(netid_prefix) for known in known_netid_prefixes):
                 continue
 
             try:
@@ -366,8 +380,8 @@ class UnifiMechDriver(api.MechanismDriver):
                     controller.request(NetworkDeleteRequest.create(unifi_network.id))
                 )
                 LOG.info('Sync: deleted orphaned UniFi network %s (%r) -- no '
-                        'matching Neutron network %s', unifi_network.id,
-                        unifi_network.name, network_id)
+                        'matching Neutron network for id prefix %s', unifi_network.id,
+                        unifi_network.name, netid_prefix)
             except Exception as e:
                 LOG.error('Sync: failed to delete orphaned UniFi network %s (%r): %s',
                          unifi_network.id, unifi_network.name, e)
@@ -1242,6 +1256,21 @@ class UnifiMechDriver(api.MechanismDriver):
             'dhcpd_dns_enabled': False,
         }
 
+    def _network_name(self, network_id, segmentation_id):
+        """Build this driver's UniFi network name for a Neutron VLAN network.
+
+        Always <= 32 characters (see _ORPHAN_NETWORK_NAME_RE's comment).
+        The "OpenStack-VLAN<id>-" prefix is at most 19 characters (VLAN
+        ids are 1-4094), so the remaining budget -- at least 13 characters
+        -- goes to as much of the dash-stripped network id as fits, for
+        uniqueness and debuggability. This is necessarily a prefix, not
+        the full id; _cleanup_orphaned_networks matches it against known
+        ids with startswith rather than equality.
+        """
+        prefix = f"OpenStack-VLAN{segmentation_id}-"
+        budget = 32 - len(prefix)
+        return f"{prefix}{network_id.replace('-', '')[:budget]}"
+
     def _reconcile_network(self, controller, loop, network, refresh=True):
         """Ensure a UniFi network exists and is correctly named for this VLAN.
 
@@ -1264,7 +1293,7 @@ class UnifiMechDriver(api.MechanismDriver):
         """
         network_id = network['id']
         segmentation_id = network['provider:segmentation_id']
-        expected_name = f"OpenStack-{network_id}-VLAN{segmentation_id}"
+        expected_name = self._network_name(network_id, segmentation_id)
 
         unifi_network = self._unifi_network_for_vlan(
             controller, loop, segmentation_id, refresh=refresh)

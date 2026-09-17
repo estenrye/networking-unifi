@@ -44,7 +44,6 @@ from unifi_ml2_driver.dns_handler import UnifiDnsHandler
 from unifi_ml2_driver.unifi_api import get_unifi_api
 from aiounifi.errors import AiounifiException
 from aiounifi.models.network import NetworkCreateRequest, NetworkDeleteRequest, NetworkUpdateRequest, Network, TypedNetwork
-from aiounifi.models.firewall_zone import FirewallZoneUpdateRequest, TypedFirewallZone
 from aiounifi.models.device import Device, DeviceListRequest, TypedDevicePortOverrides, DeviceSetPortProfileRequest
 from unifi_ml2_driver import trunk_driver
 from unifi_ml2_driver.nat_policy import (
@@ -375,7 +374,7 @@ class UnifiMechDriver(api.MechanismDriver):
                 continue
 
             try:
-                self._unassign_network_from_default_zone(controller, loop, unifi_network.id)
+                self._unassign_network_from_default_zone(controller, loop, unifi_network)
                 loop.run_until_complete(
                     controller.request(NetworkDeleteRequest.create(unifi_network.id))
                 )
@@ -860,7 +859,7 @@ class UnifiMechDriver(api.MechanismDriver):
                         break
                 
                 if target_network:
-                    self._unassign_network_from_default_zone(controller, loop, target_network.id)
+                    self._unassign_network_from_default_zone(controller, loop, target_network)
 
                     # Delete network in UniFi controller
                     loop.run_until_complete(
@@ -1046,14 +1045,19 @@ class UnifiMechDriver(api.MechanismDriver):
             LOG.error('Failed to clear subnet %s (VLAN %s) from UniFi controller: %s',
                      subnet_id, segmentation_id, e)
 
-    def _assign_network_to_default_zone(self, controller, loop, network_id):
+    def _assign_network_to_default_zone(self, controller, loop, unifi_network):
         """Assign a UniFi network to the configured default firewall zone.
 
-        Firewall zone membership lives on the zone object itself
-        (`network_ids`), not on the network's own networkconf, so this
-        looks up the configured zone by name and adds the network's ID
-        to it if it isn't already there. No-op if
-        CONF.unifi.default_firewall_zone is unset.
+        Firewall zone membership is authoritative on the *network's own*
+        `firewall_zone_id` field -- confirmed live, 2026-09-17: a zone's
+        `network_ids` list can contain a network's id while both the
+        UniFi UI and (as far as could be observed) actual firewall
+        enforcement still treat that network as belonging to whatever
+        zone its own `firewall_zone_id` names, "Internal" by default.
+        The previous implementation of this method only ever PUT the
+        zone's `network_ids`, which turns out to be cosmetic/derived
+        rather than authoritative -- it never actually moved anything.
+        No-op if CONF.unifi.default_firewall_zone is unset.
 
         Best-effort: any failure is logged, never raised, so a firewall
         zone problem (a typo'd zone name, an API quirk) can't take down
@@ -1062,7 +1066,7 @@ class UnifiMechDriver(api.MechanismDriver):
         Args:
             controller: An active UniFi controller client
             loop: The asyncio event loop to run requests on
-            network_id: The UniFi network's _id to assign
+            unifi_network: The UniFi network (aiounifi Network) to assign
         """
         zone_name = CONF.unifi.default_firewall_zone
         if not zone_name:
@@ -1076,33 +1080,33 @@ class UnifiMechDriver(api.MechanismDriver):
             )
             if not zone:
                 LOG.warning('Cannot assign network %s to firewall zone: zone %r not found',
-                           network_id, zone_name)
+                           unifi_network.id, zone_name)
                 return
 
-            if network_id in zone.network_ids:
+            if unifi_network.raw.get('firewall_zone_id') == zone.id:
                 return
 
-            # The zone PUT endpoint rejects any field beyond _id/name/
-            # network_ids as "unrecognized" (confirmed live) -- every
-            # other field GET returns (attr_no_edit, cloud_template,
-            # default_zone, external_id, zone_key, ...) is read-only and
-            # must be omitted entirely, not just filtered individually.
-            updated_zone = {
-                '_id': zone.id,
-                'name': zone.name,
-                'network_ids': list(zone.network_ids) + [network_id],
-            }
-
+            updated = dict(unifi_network.raw)
+            updated['firewall_zone_id'] = zone.id
             loop.run_until_complete(
-                controller.request(FirewallZoneUpdateRequest.create(TypedFirewallZone(updated_zone)))
+                controller.request(NetworkUpdateRequest.create(Network(TypedNetwork(updated))))
             )
-            LOG.info('Assigned UniFi network %s to firewall zone %s', network_id, zone_name)
+            LOG.info('Assigned UniFi network %s to firewall zone %s', unifi_network.id, zone_name)
         except Exception as e:
             LOG.error('Failed to assign network %s to firewall zone %s: %s',
-                     network_id, zone_name, e)
+                     unifi_network.id, zone_name, e)
 
-    def _unassign_network_from_default_zone(self, controller, loop, network_id):
+    def _unassign_network_from_default_zone(self, controller, loop, unifi_network):
         """Remove a UniFi network from the configured default firewall zone.
+
+        See _assign_network_to_default_zone: this writes the network's
+        own `firewall_zone_id` back to the site's actual default zone
+        (whichever zone has `default_zone: true` and the lowest-privilege
+        name "Internal" -- in practice always present, so this resolves
+        directly rather than needing configuration) rather than editing
+        any zone's `network_ids`. Both call sites only use this
+        immediately before deleting the network anyway, so this is
+        largely a formality/defensive best-effort, not load-bearing.
 
         Best-effort: any failure is logged, never raised -- this runs
         during network deletion, and must never block a resource from
@@ -1112,7 +1116,7 @@ class UnifiMechDriver(api.MechanismDriver):
         Args:
             controller: An active UniFi controller client
             loop: The asyncio event loop to run requests on
-            network_id: The UniFi network's _id to remove
+            unifi_network: The UniFi network (aiounifi Network) to unassign
         """
         zone_name = CONF.unifi.default_firewall_zone
         if not zone_name:
@@ -1124,25 +1128,29 @@ class UnifiMechDriver(api.MechanismDriver):
                 (z for _, z in controller.firewall_zones.items() if z.name == zone_name),
                 None
             )
-            if not zone or network_id not in zone.network_ids:
+            if not zone or unifi_network.raw.get('firewall_zone_id') != zone.id:
                 return
 
-            # See _assign_network_to_default_zone: only _id/name/network_ids
-            # are accepted on write, everything else GET returns is
-            # read-only and must be omitted entirely.
-            updated_zone = {
-                '_id': zone.id,
-                'name': zone.name,
-                'network_ids': [nid for nid in zone.network_ids if nid != network_id],
-            }
-
-            loop.run_until_complete(
-                controller.request(FirewallZoneUpdateRequest.create(TypedFirewallZone(updated_zone)))
+            internal_zone = next(
+                (z for _, z in controller.firewall_zones.items()
+                 if z.raw.get('zone_key') == 'internal'),
+                None
             )
-            LOG.info('Removed UniFi network %s from firewall zone %s', network_id, zone_name)
+            if not internal_zone:
+                LOG.warning('Cannot unassign network %s from firewall zone %s: no '
+                           'zone_key=internal zone found to fall back to',
+                           unifi_network.id, zone_name)
+                return
+
+            updated = dict(unifi_network.raw)
+            updated['firewall_zone_id'] = internal_zone.id
+            loop.run_until_complete(
+                controller.request(NetworkUpdateRequest.create(Network(TypedNetwork(updated))))
+            )
+            LOG.info('Removed UniFi network %s from firewall zone %s', unifi_network.id, zone_name)
         except Exception as e:
             LOG.error('Failed to remove network %s from firewall zone %s: %s',
-                     network_id, zone_name, e)
+                     unifi_network.id, zone_name, e)
 
     def _unifi_network_for_vlan(self, controller, loop, segmentation_id, refresh=True):
         """Find the UniFi network config matching a Neutron VLAN segment.
@@ -1338,7 +1346,7 @@ class UnifiMechDriver(api.MechanismDriver):
                 controller, loop, segmentation_id, refresh=True)
 
         if unifi_network:
-            self._assign_network_to_default_zone(controller, loop, unifi_network.id)
+            self._assign_network_to_default_zone(controller, loop, unifi_network)
             self._reconcile_ipv4_disablement(controller, loop, network, unifi_network)
 
     def _reconcile_ipv4_disablement(self, controller, loop, network, unifi_network):

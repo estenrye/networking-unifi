@@ -1349,6 +1349,28 @@ class UnifiMechDriver(api.MechanismDriver):
             self._assign_network_to_default_zone(controller, loop, unifi_network)
             self._reconcile_ipv4_disablement(controller, loop, network, unifi_network)
 
+    def _synthetic_ipv4_subnet(self, segmentation_id):
+        """A deterministic, per-VLAN-unique, never-actually-used IPv4 /24.
+
+        Confirmed live, 2026-09-17: leaving `ip_subnet` entirely unset (as
+        this method used to) is not the inert no-op it looks like. The
+        Network application's own provisioning code substitutes a
+        hardcoded default (192.168.1.1/24) for any network with no
+        declared IPv4 subnet, and validates that no two networks resolve
+        to the same subnet -- so the moment a second IPv6-only network
+        exists, one of them permanently fails an internal "duplicated
+        subnet" check and is silently *skipped* by provisioning (visible
+        only in the Network app's own server.log, not through the REST
+        API, not through the controller UI, and not affected by
+        force-provisioning the device). dhcpd_enabled is always False
+        alongside this, so the actual address never reaches a wire --
+        only its uniqueness matters. 172.16.0.0/12 (1-4094 -> 172.16.0.0
+        through 172.31.255.255, one /24 per VLAN id) is used rather than
+        192.168.0.0/16 specifically to avoid any chance of colliding with
+        a site's real LAN, which is conventionally 192.168.x.0/24.
+        """
+        return f"172.{16 + segmentation_id // 256}.{segmentation_id % 256}.1/24"
+
     def _reconcile_ipv4_disablement(self, controller, loop, network, unifi_network):
         """Disable UniFi's IPv4 DHCP/auto-scale for an IPv4-less network.
 
@@ -1356,8 +1378,10 @@ class UnifiMechDriver(api.MechanismDriver):
         default, even for a Neutron network that only ever gets an IPv6
         subnet -- left alone, that means a live, Neutron-unmanaged IPv4
         DHCP server (and UniFi's own subnet auto-expansion feature) keeps
-        running on the segment. Best-effort: swallows its own failures
-        rather than blocking the rest of network reconciliation.
+        running on the segment. Also assigns _synthetic_ipv4_subnet (see
+        its docstring for why that's required, not optional). Best-effort:
+        swallows its own failures rather than blocking the rest of
+        network reconciliation.
 
         Args:
             controller: An active UniFi controller client
@@ -1378,18 +1402,25 @@ class UnifiMechDriver(api.MechanismDriver):
         if any(s.get('ip_version') == 4 for s in subnets):
             return
 
+        segmentation_id = network['provider:segmentation_id']
+        synthetic_subnet = self._synthetic_ipv4_subnet(segmentation_id)
+
         raw = unifi_network.raw
-        if raw.get('dhcpd_enabled') is False and raw.get('auto_scale_enabled') is False:
+        if (raw.get('dhcpd_enabled') is False
+                and raw.get('auto_scale_enabled') is False
+                and raw.get('ip_subnet') == synthetic_subnet):
             return
 
         updated = dict(raw)
         updated['dhcpd_enabled'] = False
         updated['auto_scale_enabled'] = False
+        updated['ip_subnet'] = synthetic_subnet
         loop.run_until_complete(
             controller.request(NetworkUpdateRequest.create(Network(TypedNetwork(updated))))
         )
-        LOG.info('Disabled IPv4 DHCP/auto-scale for IPv6-only UniFi network %s (VLAN %s)',
-                 unifi_network.id, network.get('provider:segmentation_id'))
+        LOG.info('Disabled IPv4 DHCP/auto-scale for IPv6-only UniFi network %s '
+                 '(VLAN %s), assigned synthetic subnet %s',
+                 unifi_network.id, segmentation_id, synthetic_subnet)
 
     def _reconcile_subnet(self, controller, loop, subnet, network, refresh=True):
         """Ensure a UniFi network's subnet/DHCP fields match this Neutron subnet.
